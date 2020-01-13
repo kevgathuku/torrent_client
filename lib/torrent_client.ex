@@ -15,4 +15,8 @@ defmodule TorrentClient do
   def hello do
     :world
   end
+
+  def parse(filename) do
+    File.read!(filename) |> Bento.torrent!()
+  end
 end
