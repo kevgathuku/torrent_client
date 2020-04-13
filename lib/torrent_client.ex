@@ -3,20 +3,11 @@ defmodule TorrentClient do
   Documentation for TorrentClient.
   """
 
-  @doc """
-  Hello world.
-
-  ## Examples
-
-      iex> TorrentClient.hello()
-      :world
-
-  """
-  def hello do
-    :world
-  end
-
   def parse(filename) do
     File.read!(filename) |> Bento.torrent!()
+  end
+
+  def sample() do
+    parse("test/_data/debian-10.2.0-amd64-netinst.iso.torrent")
   end
 end
