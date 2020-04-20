@@ -5,14 +5,13 @@ defmodule TorrentClient.Tracker do
   @doc """
   Returns the Tracker URL with the params attached
   """
-
   def build_tracker_url(torrent) do
     params =
       %{
         info_hash: info_hash(torrent),
         peer_id: generate_peer_id(),
         # The port number this peer is listening on.
-        port: "6882",
+        port: 6882,
         uploaded: "0",
         downloaded: "0",
         # use the compact peer format
@@ -33,7 +32,7 @@ defmodule TorrentClient.Tracker do
     peers_response.body
     |> Bento.decode!()
     |> Map.get("peers")
-    |> parse_peer_response
+    |> parse_peer_response()
   end
 
   @doc """
@@ -67,7 +66,10 @@ defmodule TorrentClient.Tracker do
     |> sha_sum()
   end
 
-  defp generate_peer_id() do
+  @doc """
+  Generate a 20-character random string, to use as the peer id
+  """
+  def generate_peer_id() do
     :crypto.strong_rand_bytes(20) |> Base.encode64() |> binary_part(0, 20)
   end
 
@@ -82,10 +84,15 @@ defmodule TorrentClient.Tracker do
     |> Enum.map(&analyze/1)
   end
 
+  @doc """
+  Parses binary data into a Peer struct
+  """
   defp analyze(data) do
-    <<ip0::8-integer-big-unsigned, ip1::8-integer-big-unsigned, ip2::8-integer-big-unsigned,
-      ip3::8-integer-big-unsigned, port::16-integer-big-unsigned>> = data
+    <<ip0::8-unsigned-big-integer, ip1::8-unsigned-big-integer, ip2::8-unsigned-big-integer,
+      ip3::8-unsigned-big-integer, port::16-integer-big-unsigned>> = data
 
-    %Peer{ip: "#{ip0}.#{ip1}.#{ip2}.#{ip3}", port: port}
+    ip = to_charlist("#{ip0}.#{ip1}.#{ip2}.#{ip3}")
+
+    %Peer{ip: ip, port: port}
   end
 end
