@@ -1,5 +1,20 @@
 defmodule Torrent do
-  defstruct [:announce, :info_hash, :name, :length, :piece_hashes, :piece_length]
+  defstruct [:announce, :name, :length, :pieces, :piece_length, :info_hash]
+
+  @port 6882
+
+  @doc """
+  Convert from a bento torrent struct to our own torrent struct
+  """
+  def from_bento(bento_torrent) do
+    bento_torrent
+    |> Map.take([:announce])
+    |> Map.put(:name, bento_torrent.info.name)
+    |> Map.put(:length, bento_torrent.info.length)
+    |> Map.put(:info_hash, info_hash(bento_torrent))
+    |> Map.put(:piece_length, Map.get(bento_torrent.info, :"piece length"))
+    |> Map.put(:pieces, bento_torrent.info.pieces)
+  end
 
   @doc """
   Returns the Tracker URL with the params attached
@@ -10,7 +25,7 @@ defmodule Torrent do
         info_hash: info_hash(torrent),
         peer_id: Utils.generate_peer_id(),
         # The port number this peer is listening on.
-        port: 6882,
+        port: @port,
         uploaded: "0",
         downloaded: "0",
         # use the compact peer format
@@ -26,13 +41,13 @@ defmodule Torrent do
   Get the remaining length from a torrent file
   Works for both single file torrents and multi-file torrents
   """
-  def remaining(torrent) do
-    case torrent.info do
+  def remaining(bento_torrent) do
+    case bento_torrent.info do
       %Bento.Metainfo.SingleFile{} ->
-        torrent.info.length
+        bento_torrent.info.length
 
       %Bento.Metainfo.MultiFile{} ->
-        Enum.reduce(torrent.info.files, 0, fn file, acc ->
+        Enum.reduce(bento_torrent.info.files, 0, fn file, acc ->
           acc + file.length
         end)
 
@@ -41,9 +56,8 @@ defmodule Torrent do
     end
   end
 
-  defp info_hash(torrent) do
-    torrent.info
-    |> Map.from_struct()
+  defp info_hash(bento_torrent) do
+    bento_torrent.info
     |> Map.take([:name, :length, :"piece length", :pieces])
     |> Bento.encode!()
     |> sha_sum()
@@ -53,12 +67,3 @@ defmodule Torrent do
     :crypto.hash(:sha, binary)
   end
 end
-
-# TorrentFile{
-# 	Announce:    bto.Announce,
-# 	InfoHash:    infoHash, #  computed the SHA-1 hash of the entire bencoded info dict
-# 	PieceHashes: pieceHashes, # a slice of hashes (each [20]byte) to enable easily accessing individual hashes
-# 	PieceLength: bto.Info.PieceLength,
-# 	Length:      bto.Info.Length,
-# 	Name:        bto.Info.Name,
-# }
