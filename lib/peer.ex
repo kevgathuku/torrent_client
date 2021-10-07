@@ -1,25 +1,22 @@
 defmodule Peer do
   defstruct [:ip, :port]
 
-  require Logger
-
   @doc """
-  Establish a connection to the specified peers
+  Send a handshake to the specified peer
   """
-  def connect(peer) do
-    {:ok, address} = :inet.parse_address(peer.ip)
+  def handshake(peer) do
+    # # Get handshake from Torrent.handshake_message
+    # handshake = Torrent.handshake_message()
+    #
+    # # Send handshake message to peer
+    # :gen_tcp.send(socket, handshake)
 
-    # timeout -> 3 seconds
-    case :gen_tcp.connect(address, peer.port, [active: false], 3000) do
-      {:ok, socket} ->
-        Logger.info("Completed handshake with #{peer.ip}")
-        socket
-
-      {:error, reason} ->
-        Logger.error("Could not connect: #{reason}")
-    end
+    # Send handshake to client and ensure we receive response back
   end
 
+  @doc """
+  Extract peers from the tracker response's peers binary data
+  """
   def extract_peers(data) when is_binary(data) do
     peer_size = 6
     num_peers = (byte_size(data) / peer_size) |> floor
@@ -32,7 +29,7 @@ defmodule Peer do
   end
 
   @doc """
-  Parses binary data into a Peer struct
+  Parses a peer's binary data into a Peer struct
   """
   def parse_peer(data) do
     <<ip0::8-unsigned-big-integer, ip1::8-unsigned-big-integer, ip2::8-unsigned-big-integer,

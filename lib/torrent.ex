@@ -47,7 +47,7 @@ defmodule Torrent do
     protocol = "BitTorrent Protocol"
     protocol_length = byte_size(protocol)
 
-    <<protocol_length>> <> protocol <> capabilities <> info_hash <> @peer_i
+    <<protocol_length>> <> protocol <> capabilities <> info_hash <> @peer_id
   end
 
   @doc """
