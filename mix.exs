@@ -5,7 +5,7 @@ defmodule TorrentClient.MixProject do
     [
       app: :torrent_client,
       version: "0.1.0",
-      elixir: "~> 1.9",
+      elixir: "~> 1.13",
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]
@@ -27,7 +27,7 @@ defmodule TorrentClient.MixProject do
       {:tesla, "~> 1.4.3"},
 
       # optional, but recommended adapter
-      {:hackney, "~> 1.15.2"}
+      {:hackney, "~> 1.17"},
     ]
   end
 end
