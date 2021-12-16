@@ -1,8 +1,10 @@
 defmodule Handshake do
-  defstruct [:info_hash, :peer_id, protocol: "BitTorrent Protocol"]
+  @protocol "BitTorrent Protocol"
 
-  def init(torrent, peer_id) do
-    %Handshake{info_hash: torrent.info_hash, peer_id: peer_id}
+  defstruct [:info_hash, :peer_id, protocol: @protocol]
+
+  def init(info_hash, peer_id) do
+    %Handshake{info_hash: info_hash, peer_id: peer_id}
   end
 
   @doc """
@@ -22,6 +24,10 @@ defmodule Handshake do
   Parses a handshake from a stream
   """
   def deserialize(stream) do
+    p_length = byte_size(protocol)
 
+    <<protocol_length::binary_size(p_length)>> <>
+      <<protocol::binary-size(19)>> <> <<capabilities::8>> <> <<info_hash>> <> <<peer_id>> =
+      stream
   end
 end
