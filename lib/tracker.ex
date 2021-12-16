@@ -6,11 +6,12 @@ defmodule Tracker do
 
   @doc """
   Returns the Tracker URL with the params attached
+  Accepts our custom Torrent struct
   """
-  def tracker_url(bento_torrent) do
+  def tracker_url(torrent) do
     params =
       %{
-        info_hash: Torrent.info_hash(bento_torrent),
+        info_hash: torrent.info_hash,
         peer_id: @peer_id,
         # The port number this peer is listening on.
         port: @port,
@@ -18,15 +19,15 @@ defmodule Tracker do
         downloaded: "0",
         # use the compact peer format
         compact: "1",
-        left: Torrent.remaining(bento_torrent)
+        left: torrent.length
       }
       |> URI.encode_query()
 
-    "#{bento_torrent.announce}?#{params}"
+    "#{torrent.announce}?#{params}"
   end
 
-  def request_peers(bento_torrent) do
-    bento_torrent
+  def request_peers(torrent) do
+    torrent
     |> tracker_url()
     |> get()
   end
@@ -54,11 +55,12 @@ defmodule Tracker do
 
   @doc """
   Get the peers for the torrent file
+  Accepts our custom Torrent struct
   """
-  def peers(bento_torrent) do
+  def peers(torrent) do
     # TODO: Add error handling for the request_peers request
     {:ok, response} =
-      bento_torrent
+      torrent
       |> request_peers()
 
     parse_peer_response(response)
@@ -66,15 +68,17 @@ defmodule Tracker do
 
   @doc """
   Get a random peer from the list of parsed Peers
+  Accepts our custom Torrent struct
   """
-  def random_peer(bento_torrent) do
-    bento_torrent
+  def random_peer(torrent) do
+    torrent
     |> peers()
     |> Enum.random()
   end
 
   @doc """
   Generate a handshake message to send to peers
+  Accepts our custom Torrent struct
   """
   def handshake_message(torrent) do
     capabilities = <<0, 0, 0, 0, 0, 0, 0, 0>>

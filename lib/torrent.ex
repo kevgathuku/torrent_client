@@ -8,15 +8,15 @@ defmodule Torrent do
     bento_torrent
     |> Map.take([:announce])
     |> Map.put(:name, bento_torrent.info.name)
-    |> Map.put(:length, bento_torrent.info.length)
+    |> Map.put(:length, remaining(bento_torrent))
     |> Map.put(:info_hash, info_hash(bento_torrent))
     |> Map.put(:piece_length, Map.get(bento_torrent.info, :"piece length"))
     |> Map.put(:pieces, bento_torrent.info.pieces)
   end
 
   @doc """
-  Get the remaining length from a torrent file
-  Works for both single file torrents and multi-file torrents
+  Get the remaining length from a Bento torrent file
+  Handles both single file torrents and multi-file torrents
   """
   def remaining(bento_torrent) do
     case bento_torrent.info do
