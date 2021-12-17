@@ -3,6 +3,9 @@ defmodule Downloader do
   Entry point for the Downloader.
   """
 
+  @port 6882
+  @peer_id Utils.generate_peer_id()
+
   def parse_torrent_file(filename) do
     File.read!(filename) |> Bento.torrent!()
   end
@@ -17,6 +20,6 @@ defmodule Downloader do
   end
 
   def tracker_peers() do
-    sample_bento_torrent() |> Torrent.from_bento() |> Tracker.peers()
+    sample_bento_torrent() |> Torrent.from_bento() |> Tracker.peers(@peer_id, @port)
   end
 end

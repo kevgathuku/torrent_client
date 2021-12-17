@@ -1,20 +1,17 @@
 defmodule Tracker do
   use Tesla
 
-  @port 6882
-  @peer_id Utils.generate_peer_id()
-
   @doc """
   Returns the Tracker URL with the params attached
   Accepts our custom Torrent struct
   """
-  def tracker_url(torrent) do
+  def tracker_url(torrent, peer_id, port) do
     params =
       %{
         info_hash: torrent.info_hash,
-        peer_id: @peer_id,
+        peer_id: peer_id,
         # The port number this peer is listening on.
-        port: @port,
+        port: port,
         uploaded: "0",
         downloaded: "0",
         # use the compact peer format
@@ -51,23 +48,13 @@ defmodule Tracker do
   Get the peers for the torrent file
   Accepts our custom Torrent struct
   """
-  def peers(torrent) do
+  def peers(torrent, peer_id, port) do
     # TODO: Add error handling for the request
     response =
       torrent
-      |> tracker_url()
+      |> tracker_url(peer_id, port)
       |> get!()
 
     parse_peer_response(response)
-  end
-
-  @doc """
-  Get a random peer from the list of parsed Peers
-  Accepts our custom Torrent struct
-  """
-  def random_peer(torrent) do
-    torrent
-    |> peers()
-    |> Enum.random()
   end
 end
