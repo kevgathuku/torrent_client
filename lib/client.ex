@@ -1,70 +1,73 @@
 defmodule Client do
   @moduledoc """
   Entry point for the Client.
+  Connects to a peer
   """
+
   require Logger
 
-  # use GenServer
+  use GenServer
 
-  # @initial_state %{socket: nil}
+  @initial_state %{socket: nil, peer: nil}
 
-  # def start_link do
-  #   GenServer.start_link(__MODULE__, @initial_state)
-  # end
+  def start_link do
+    GenServer.start_link(__MODULE__, @initial_state, name: PeerClient)
+  end
 
-  # def init(state) do
-  #   opts = [:binary, active: false]
-  #   {:ok, socket} = :gen_tcp.connect('localhost', 6379, opts)
-  #   {:ok, %{state | socket: socket}}
-  # end
+  @impl true
+  def init(_state) do
+    {:ok, @initial_state}
+  end
 
-  @doc """
-  Connects with a peer, completes a handshake, and receives a handshake
-  """
-  def new(peer, peer_id, info_hash) do
-    case connect(peer) do
+  @impl true
+  def handle_cast({:connect, peer}, state) do
+    opts = [:binary, active: false]
+    {:ok, address} = :inet.parse_address(peer.ip)
+
+    # timeout -> 3 seconds
+    case :gen_tcp.connect(address, peer.port, opts, 3000) do
       {:ok, socket} ->
         Logger.info("Connected with #{peer.ip}")
 
-        # TODO: Send info_hash
-
-        handshake = Handshake.init(info_hash, peer_id) |> Handshake.serialize()
-
-        # Send handshake message to peer
-        :gen_tcp.send(socket, handshake)
-
-      # Send handshake to peer and ensure we receive response back
+        {:noreply, %{state | socket: socket, peer: peer}}
 
       {:error, reason} ->
         Logger.error("Could not connect: #{reason}")
+        {:noreply, %{state | peer: peer}}
     end
   end
 
-  def parse_torrent_file(filename) do
-    File.read!(filename) |> Bento.torrent!()
+  @impl true
+  def handle_call(:report, _from, state) do
+    # _from is the client calling this function
+    # should return a tuple: {:reply, response, state}
+    {:reply, state, state}
   end
 
-  def test_file do
-    "test/_data/debian-10.2.0-amd64-netinst.iso.torrent"
+  @doc """
+  Instruct the server to create a connection to the specified peer
+  """
+  def connect(server, peer) do
+    GenServer.cast(server, {:connect, peer})
   end
 
-  def sample_bento_torrent() do
-    test_file()
-    |> parse_torrent_file()
+  @doc """
+  Instruct the server to report the current GenServer state
+  """
+  def report(server) do
+    GenServer.call(server, :report)
   end
 
   @doc """
   Send a handshake to the specified peer
   """
-  def complete_handshake(socket, peer) do
-  end
+  def complete_handshake(server, info_hash, peer_id) do
+    handshake = Handshake.init(info_hash, peer_id) |> Handshake.serialize()
 
-  @doc """
-  Establish a connection to the specified peer
-  """
-  def connect(peer) do
-    {:ok, address} = :inet.parse_address(peer.ip)
-    # timeout -> 3 seconds
-    :gen_tcp.connect(address, peer.port, [active: false], 3000)
+    # Send handshake message to peer
+    # TODO: Send this to the GenServer
+    :gen_tcp.send(socket, handshake)
+
+    # TODO: Receive response back
   end
 end
