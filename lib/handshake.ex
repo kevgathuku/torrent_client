@@ -1,9 +1,13 @@
 defmodule Handshake do
   @protocol "BitTorrent Protocol"
+  @capabilities <<0, 0, 0, 0, 0, 0, 0, 0>>
 
-  defstruct [:info_hash, :peer_id, protocol: @protocol]
+  @enforce_keys [:info_hash, :peer_id]
+  defstruct [:info_hash, :peer_id]
 
   def init(info_hash, peer_id) do
+    IO.puts("INIT HS:" <> "PEER ID:" <> peer_id)
+
     %Handshake{info_hash: info_hash, peer_id: peer_id}
   end
 
@@ -11,23 +15,32 @@ defmodule Handshake do
   Generate a handshake message to send to peers
   """
   def serialize(handshake) do
-    capabilities = <<0, 0, 0, 0, 0, 0, 0, 0>>
     info_hash = handshake.info_hash
-    protocol = handshake.protocol
     peer_id = handshake.peer_id
-    protocol_length = byte_size(protocol)
+    protocol_length = byte_size(@protocol)
 
-    <<protocol_length>> <> protocol <> capabilities <> info_hash <> peer_id
+    <<protocol_length>> <> @protocol <> @capabilities <> info_hash <> peer_id
   end
 
   @doc """
   Parses a handshake from a stream
   """
   def deserialize(stream) do
-    p_length = byte_size(protocol)
+    protocol_len_bits = byte_size(@protocol) * 8
+    capabilities_len_bits = byte_size(@capabilities) * 8
+    peer_len_bits = info_hash_len_bits = 20 * 8
 
-    <<protocol_length::binary_size(p_length)>> <>
-      <<protocol::binary-size(19)>> <> <<capabilities::8>> <> <<info_hash>> <> <<peer_id>> =
+    <<protocol_length::8>> <>
+      <<protocol::binary-size(protocol_len_bits)>> <>
+      <<_capabilities::binary-size(capabilities_len_bits)>> <>
+      <<info_hash::binary-size(info_hash_len_bits)>> <> <<peer_id::binary-size(peer_len_bits)>> =
       stream
+
+    IO.puts("DES: protocol_length:", protocol_length)
+    IO.puts("DES: protocol:" <> protocol)
+    IO.puts("DES: Info hash:" <> info_hash)
+    IO.puts("DES: peer_id:" <> peer_id)
+
+    {:ok, %Handshake{info_hash: info_hash, peer_id: peer_id}}
   end
 end
