@@ -26,12 +26,6 @@ defmodule Tracker do
     "#{torrent.announce}?#{params}"
   end
 
-  def request_peers(torrent) do
-    torrent
-    |> tracker_url()
-    |> get()
-  end
-
   @doc """
   Extract peers from the tracker response's peers binary data
   """
@@ -58,10 +52,11 @@ defmodule Tracker do
   Accepts our custom Torrent struct
   """
   def peers(torrent) do
-    # TODO: Add error handling for the request_peers request
-    {:ok, response} =
+    # TODO: Add error handling for the request
+    response =
       torrent
-      |> request_peers()
+      |> tracker_url()
+      |> get!()
 
     parse_peer_response(response)
   end
