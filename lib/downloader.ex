@@ -20,7 +20,20 @@ defmodule Downloader do
     |> Torrent.from_bento(%{peer_id: @peer_id})
   end
 
-  def tracker_peers() do
-    sample_torrent() |> Tracker.peers(@peer_id, @port)
+  def tracker_peers(torrent \\ sample_torrent()) do
+    torrent |> Tracker.peers(@peer_id, @port)
+  end
+
+  def random_peer(torrent \\ sample_torrent()) do
+    torrent |> tracker_peers() |> Enum.random()
+  end
+
+  def connect_to_random_peer(torrent \\ sample_torrent()) do
+    peers = tracker_peers(torrent)
+    peer = Enum.random(peers)
+
+    {:ok, server} = Client.start_link(torrent)
+    response = Client.connect(server, peer)
+    IO.puts(response)
   end
 end
