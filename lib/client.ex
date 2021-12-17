@@ -8,19 +8,20 @@ defmodule Client do
 
   use GenServer
 
-  @initial_state %{socket: nil, peer: nil}
+  @initial_state %{socket: nil, peer: nil, torrent: nil}
 
-  def start_link do
-    GenServer.start_link(__MODULE__, @initial_state, name: PeerClient)
+  def start_link(torrent) do
+    state = @initial_state |> Map.put(:torrent, torrent)
+    GenServer.start_link(__MODULE__, state, name: PeerClient)
   end
 
   @impl true
-  def init(_state) do
-    {:ok, @initial_state}
+  def init(state) do
+    {:ok, state}
   end
 
   @impl true
-  def handle_cast({:connect, peer}, state) do
+  def handle_call({:connect, peer}, _from, state) do
     opts = [:binary, active: false]
     {:ok, address} = :inet.parse_address(peer.ip)
 
@@ -29,11 +30,37 @@ defmodule Client do
       {:ok, socket} ->
         Logger.info("Connected with #{peer.ip}")
 
-        {:noreply, %{state | socket: socket, peer: peer}}
+        {:reply, :ok, %{state | socket: socket, peer: peer}}
 
       {:error, reason} ->
         Logger.error("Could not connect: #{reason}")
-        {:noreply, %{state | peer: peer}}
+        {:reply, :error, state}
+    end
+  end
+
+  @impl true
+  def handle_call(:handshake, _from, state) do
+    %{socket: socket, torrent: %{info_hash: info_hash, peer_id: peer_id}} = state
+
+    handshake = Handshake.init(info_hash, peer_id) |> Handshake.serialize()
+
+    :ok = :gen_tcp.send(socket, handshake)
+
+    # `0` means receive all available bytes on the socket.
+    case :gen_tcp.recv(socket, 0) do
+      {:ok, msg} ->
+        IO.puts("Received msg" <> msg)
+        {:ok, parsed_handshake} = Handshake.deserialize(msg)
+
+        IO.puts("parsed_handshake")
+        IO.inspect(parsed_handshake)
+
+        {:reply, parsed_handshake, state}
+
+      {:error, error} ->
+        IO.puts("ERROR")
+        IO.inspect(error)
+        {:reply, error, state}
     end
   end
 
@@ -48,7 +75,7 @@ defmodule Client do
   Instruct the server to create a connection to the specified peer
   """
   def connect(server, peer) do
-    GenServer.cast(server, {:connect, peer})
+    GenServer.call(server, {:connect, peer})
   end
 
   @doc """
@@ -59,15 +86,13 @@ defmodule Client do
   end
 
   @doc """
-  Send a handshake to the specified peer
+  Instruct the server to complete a handshake with a peer
+  Sends a handshake and ensures we get a valid response back
   """
-  def complete_handshake(server, info_hash, peer_id) do
-    handshake = Handshake.init(info_hash, peer_id) |> Handshake.serialize()
+  def complete_handshake(server) do
+    response = GenServer.call(server, :handshake)
 
-    # Send handshake message to peer
-    # TODO: Send this to the GenServer
-    :gen_tcp.send(socket, handshake)
-
-    # TODO: Receive response back
+    IO.puts("RESPONSE")
+    IO.inspect(response)
   end
 end
