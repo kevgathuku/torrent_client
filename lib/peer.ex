@@ -1,4 +1,8 @@
 defmodule Peer do
+  @moduledoc """
+  A struct representing a peer.
+  """
+
   defstruct [:ip, :port]
 
   @doc """

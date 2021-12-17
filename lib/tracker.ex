@@ -70,17 +70,4 @@ defmodule Tracker do
     |> peers()
     |> Enum.random()
   end
-
-  @doc """
-  Generate a handshake message to send to peers
-  Accepts our custom Torrent struct
-  """
-  def handshake_message(torrent) do
-    capabilities = <<0, 0, 0, 0, 0, 0, 0, 0>>
-    info_hash = torrent.info_hash
-    protocol = "BitTorrent Protocol"
-    protocol_length = byte_size(protocol)
-
-    <<protocol_length>> <> protocol <> capabilities <> info_hash <> @peer_id
-  end
 end
