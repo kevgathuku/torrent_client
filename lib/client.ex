@@ -21,30 +21,12 @@ defmodule Client do
   end
 
   @impl true
-  @impl true
   def handle_call(:handshake, _from, state) do
     %{socket: socket, torrent: %{info_hash: info_hash, peer_id: peer_id}} = state
 
-    handshake = Handshake.init(info_hash, peer_id) |> Handshake.serialize()
+    socket = send_handshake(socket, info_hash, peer_id)
 
-    :ok = :gen_tcp.send(socket, handshake)
-
-    # `0` means receive all available bytes on the socket.
-    case :gen_tcp.recv(socket, 0) do
-      {:ok, msg} ->
-        IO.puts("Received msg" <> msg)
-        {:ok, parsed_handshake} = Handshake.deserialize(msg)
-
-        IO.puts("parsed_handshake")
-        IO.inspect(parsed_handshake)
-
-        {:reply, parsed_handshake, state}
-
-      {:error, error} ->
-        IO.puts("ERROR")
-        IO.inspect(error)
-        {:reply, error, state}
-    end
+    response = receive_handshake(socket)
   end
 
   @impl true
@@ -61,11 +43,36 @@ defmodule Client do
     try do
       Socket.TCP.connect!(peer.ip, peer.port, timeout: 3000)
     rescue
-      e ->
+      _e ->
         Logger.error("Error. Could not connect to peer: #{peer.ip}")
 
         exit(:normal)
     end
+  end
+
+  def send_handshake(socket, info_hash, peer_id) do
+    handshake = Handshake.init(info_hash, peer_id) |> Handshake.serialize()
+    socket |> Socket.Stream.send!(handshake)
+    socket
+  end
+
+  def receive_handshake(socket) do
+    # IO.puts("In receive_handshake")
+    socket |> Socket.packet!(:raw)
+
+    message = socket |> recv_byte!(1)
+    IO.puts("Message:")
+    IO.inspect(message)
+
+    request_length = message |> :binary.bin_to_list() |> Enum.at(0)
+
+    %{
+      pstrlen: request_length,
+      pstr: recv_byte!(socket, request_length),
+      placeholder: recv_byte!(socket, 8),
+      info_hash: recv_byte!(socket, 20),
+      peer_id: recv_byte!(socket, 20)
+    }
   end
 
   @doc """
@@ -79,10 +86,21 @@ defmodule Client do
   Instruct the server to complete a handshake with a peer
   Sends a handshake and ensures we get a valid response back
   """
-  def complete_handshake(server) do
-    response = GenServer.call(server, :handshake)
+  def complete_handshake(server, peer) do
+  end
 
-    IO.puts("RESPONSE")
-    IO.inspect(response)
+  def recv_byte!(socket, count) do
+    case socket |> Socket.Stream.recv(count) do
+      {:error, _} ->
+        IO.puts("Received Error. Exiting...")
+        exit(:normal)
+
+      {:ok, nil} ->
+        IO.puts("Received nil. Exiting...")
+        exit(:normal)
+
+      {:ok, message} ->
+        message
+    end
   end
 end
