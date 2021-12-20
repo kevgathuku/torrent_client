@@ -3,8 +3,62 @@ defmodule Downloader do
   Entry point for the Downloader.
   """
 
+  use GenServer
+
   @port 6882
   @peer_id Utils.generate_peer_id()
+  @initial_state %{torrent: nil, peers: nil}
+
+  @impl true
+  def init(state) do
+    {:ok, state}
+  end
+
+  def start_link(torrent) do
+    peers = torrent |> tracker_peers()
+    state = @initial_state |> Map.put(:torrent, torrent) |> Map.put(:peers, peers)
+    GenServer.start_link(__MODULE__, state, name: Downloader)
+  end
+
+  @impl true
+  def handle_cast({:filter_peers, :connected}, state) do
+    connected_peers =
+      Enum.filter(state.peers, fn peer ->
+        case Client.connect(peer) do
+          {:ok, _} ->
+            IO.puts("Peer: " <> peer.ip <> " is connected")
+            true
+
+          {:error, _} ->
+            IO.puts("ERROR Unable to connect to Peer: #{peer.ip}")
+
+            false
+        end
+      end)
+
+    {:noreply, %{state | peers: connected_peers}}
+  end
+
+  @impl true
+  def handle_call(:report, _from, state) do
+    # _from is the client calling this function
+    # should return a tuple: {:reply, response, state}
+    {:reply, state, state}
+  end
+
+  @doc """
+  Instruct the server to filter out the unresponsive peers
+  """
+  def filter_connected_peers(server) do
+    GenServer.cast(server, {:filter_peers, :connected})
+  end
+
+  @doc """
+  Instruct the server to report the current GenServer state
+  """
+  def report(server) do
+    GenServer.call(server, :report)
+  end
 
   def to_bento_torrent(filename) do
     File.read!(filename) |> Bento.torrent!()
@@ -29,11 +83,13 @@ defmodule Downloader do
   end
 
   def connect_to_random_peer(torrent \\ sample_torrent()) do
-    peers = tracker_peers(torrent)
-    peer = Enum.random(peers)
+    {:ok, server} = start_link(torrent)
+    filter_connected_peers(server)
 
-    {:ok, server} = Client.start_link(torrent)
-    response = Client.connect(server, peer)
-    IO.puts(response)
+    # TODO: Call this after some time
+    # OR have GenServer tell us when the filtering is complete
+    state = report(server)
+    connected_peers = Enum.count(state.peers)
+    IO.puts("Connected peers: #{connected_peers}")
   end
 end

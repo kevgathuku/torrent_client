@@ -8,11 +8,10 @@ defmodule Client do
 
   use GenServer
 
-  @initial_state %{socket: nil, peer: nil, torrent: nil, all_peers: nil}
+  @initial_state %{socket: nil, peer: nil, torrent: nil}
 
   def start_link(torrent) do
-    peers = torrent |> Downloader.tracker_peers()
-    state = @initial_state |> Map.put(:torrent, torrent) |> Map.put(:all_peers, peers)
+    state = @initial_state |> Map.put(:torrent, torrent)
     GenServer.start_link(__MODULE__, state, name: PeerClient)
   end
 
@@ -37,28 +36,6 @@ defmodule Client do
     {:reply, state, state}
   end
 
-  @impl true
-  def handle_cast({:filter_peers, :connected}, state) do
-    connected_peers =
-      Enum.filter(state.all_peers, fn peer ->
-        case connect(peer) do
-          {:ok, _} ->
-            IO.puts("Peer: " <> peer.ip <> " is connected")
-            true
-
-          {:error, _} ->
-            IO.puts(
-              "ERROR Unable to connect to Peer: " <>
-                peer.ip
-            )
-
-            false
-        end
-      end)
-
-    {:noreply, %{state | all_peers: connected_peers}}
-  end
-
   @doc """
   Instruct the server to create a connection to the specified peer
   """
@@ -77,8 +54,8 @@ defmodule Client do
     socket |> Socket.packet!(:raw)
 
     message = socket |> recv_byte!(1)
-    IO.puts("Message:")
-    IO.inspect(message)
+    IO.puts("Message: #{message}")
+    # IO.inspect()
 
     request_length = message |> :binary.bin_to_list() |> Enum.at(0)
 
@@ -99,17 +76,11 @@ defmodule Client do
   end
 
   @doc """
-  Instruct the server to filter out the unresponsive peers
-  """
-  def filter_connected_peers(server) do
-    GenServer.cast(server, {:filter_peers, :connected})
-  end
-
-  @doc """
-  Instruct the server to complete a handshake with a peer
-  Sends a handshake and ensures we get a valid response back
+  Instruct the server to complete a handshake with the remaining peers
+  Only retains peers with whom we're able to complete a handshake
   """
   def complete_handshake(server, peer) do
+    # TODO: Start here
   end
 
   def recv_byte!(socket, count) do
