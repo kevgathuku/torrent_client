@@ -8,10 +8,11 @@ defmodule Client do
 
   use GenServer
 
-  @initial_state %{socket: nil, peer: nil, torrent: nil}
+  @initial_state %{socket: nil, peer: nil, torrent: nil, all_peers: nil}
 
   def start_link(torrent) do
-    state = @initial_state |> Map.put(:torrent, torrent)
+    peers = torrent |> Downloader.tracker_peers()
+    state = @initial_state |> Map.put(:torrent, torrent) |> Map.put(:all_peers, peers)
     GenServer.start_link(__MODULE__, state, name: PeerClient)
   end
 
@@ -36,18 +37,33 @@ defmodule Client do
     {:reply, state, state}
   end
 
+  @impl true
+  def handle_cast({:filter_peers, :connected}, state) do
+    connected_peers =
+      Enum.filter(state.all_peers, fn peer ->
+        case connect(peer) do
+          {:ok, _} ->
+            IO.puts("Peer: " <> peer.ip <> " is connected")
+            true
+
+          {:error, _} ->
+            IO.puts(
+              "ERROR Unable to connect to Peer: " <>
+                peer.ip
+            )
+
+            false
+        end
+      end)
+
+    {:noreply, %{state | all_peers: connected_peers}}
+  end
+
   @doc """
   Instruct the server to create a connection to the specified peer
   """
   def connect(peer) do
-    try do
-      Socket.TCP.connect!(peer.ip, peer.port, timeout: 3000)
-    rescue
-      _e ->
-        Logger.error("Error. Could not connect to peer: #{peer.ip}")
-
-        exit(:normal)
-    end
+    Socket.TCP.connect(peer.ip, peer.port, timeout: 3000)
   end
 
   def send_handshake(socket, info_hash, peer_id) do
@@ -80,6 +96,13 @@ defmodule Client do
   """
   def report(server) do
     GenServer.call(server, :report)
+  end
+
+  @doc """
+  Instruct the server to filter out the unresponsive peers
+  """
+  def filter_connected_peers(server) do
+    GenServer.cast(server, {:filter_peers, :connected})
   end
 
   @doc """
