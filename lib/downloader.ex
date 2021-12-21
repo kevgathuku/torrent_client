@@ -21,22 +21,34 @@ defmodule Downloader do
   end
 
   @impl true
-  def handle_cast({:filter_peers, :connected}, state) do
-    connected_peers =
-      Enum.filter(state.peers, fn peer ->
-        case Client.connect(peer) do
-          {:ok, _} ->
-            IO.puts("Peer: " <> peer.ip <> " is connected")
-            true
+  def handle_cast(:start_peer_clients, state) do
+    peers_with_pids =
+      state.peers
+      |> Enum.map(fn peer ->
+        case Client.start_link(state.torrent, peer) do
+          {:ok, pid} ->
+            %{peer | pid: pid}
+
+          :ignore ->
+            peer
 
           {:error, _} ->
-            IO.puts("ERROR Unable to connect to Peer: #{peer.ip}")
-
-            false
+            peer
         end
       end)
 
-    {:noreply, %{state | peers: connected_peers}}
+    {:noreply, %{state | peers: peers_with_pids}}
+  end
+
+  @impl true
+  def handle_cast({:filter_peers, :connected}, state) do
+    peers_with_pids =
+      state.peers
+      |> Enum.reject(fn peer -> is_nil(peer.pid) end)
+
+    IO.puts("Remaining Peers: #{Enum.count(peers_with_pids)}")
+
+    {:noreply, %{state | peers: peers_with_pids}}
   end
 
   @impl true
@@ -44,6 +56,13 @@ defmodule Downloader do
     # _from is the client calling this function
     # should return a tuple: {:reply, response, state}
     {:reply, state, state}
+  end
+
+  @doc """
+  Instruct the server to connect to the peers
+  """
+  def start_peer_clients(server) do
+    GenServer.cast(server, :start_peer_clients)
   end
 
   @doc """
@@ -78,11 +97,7 @@ defmodule Downloader do
     torrent |> Tracker.peers(@peer_id, @port)
   end
 
-  def random_peer(torrent \\ sample_torrent()) do
-    torrent |> tracker_peers() |> Enum.random()
-  end
-
-  def connect_to_random_peer(torrent \\ sample_torrent()) do
+  def filter_peers(torrent \\ sample_torrent()) do
     {:ok, server} = start_link(torrent)
     filter_connected_peers(server)
 

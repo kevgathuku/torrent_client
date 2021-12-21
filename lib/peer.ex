@@ -3,7 +3,7 @@ defmodule Peer do
   A struct representing a peer.
   """
 
-  defstruct [:ip, :port]
+  defstruct [:ip, :port, :pid]
 
   @doc """
   Parses a peer's binary data into a Peer struct

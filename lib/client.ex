@@ -8,25 +8,37 @@ defmodule Client do
 
   use GenServer
 
-  @initial_state %{socket: nil, peer: nil, torrent: nil}
+  @initial_state %{socket: nil, peer: nil, info_hash: nil, peer_id: nil}
 
-  def start_link(torrent) do
-    state = @initial_state |> Map.put(:torrent, torrent)
-    GenServer.start_link(__MODULE__, state, name: PeerClient)
+  def start_link(torrent, peer) do
+    state =
+      @initial_state
+      |> Map.put(:info_hash, torrent.info_hash)
+      |> Map.put(:peer_id, torrent.peer_id)
+      |> Map.put(:peer, peer)
+
+    GenServer.start_link(__MODULE__, state)
   end
 
   @impl true
-  def init(state) do
-    {:ok, state}
+  def init(init_state) do
+    # Initiate connection with peer
+    # init_state -> has peer_id, peer and info_hash
+    %{peer: peer} = init_state
+
+    case connect(peer) do
+      {:ok, socket} ->
+        IO.puts("Peer: " <> peer.ip <> " is connected")
+
+        {:ok, %{init_state | socket: socket}}
+
+      {:error, _} ->
+        IO.puts("ERROR: Unable to connect to Peer: #{peer.ip}")
+        # the process will exit normally without entering the loop
+        :ignore
+    end
   end
 
-  @impl true
-  def handle_call(:handshake, _from, state) do
-    %{socket: socket, torrent: %{info_hash: info_hash, peer_id: peer_id}} = state
-
-    socket = send_handshake(socket, info_hash, peer_id)
-
-    response = receive_handshake(socket)
   end
 
   @impl true
@@ -50,12 +62,11 @@ defmodule Client do
   end
 
   def receive_handshake(socket) do
-    # IO.puts("In receive_handshake")
+    IO.puts("In receive_handshake")
     socket |> Socket.packet!(:raw)
 
     message = socket |> recv_byte!(1)
     IO.puts("Message: #{message}")
-    # IO.inspect()
 
     request_length = message |> :binary.bin_to_list() |> Enum.at(0)
 
