@@ -39,6 +39,21 @@ defmodule Client do
     end
   end
 
+  @impl true
+  def handle_cast(:complete_handshake, state) do
+    %{socket: socket, info_hash: info_hash, peer_id: peer_id, peer: peer} = state
+
+    response =
+      socket
+      |> send_handshake(info_hash, peer_id)
+      |> receive_handshake
+
+    IO.puts("Response from handshake with: #{peer.ip}")
+    IO.inspect(response)
+
+    verify_checksum(response.info_hash, info_hash)
+
+    {:noreply, state}
   end
 
   @impl true
@@ -57,12 +72,18 @@ defmodule Client do
 
   def send_handshake(socket, info_hash, peer_id) do
     handshake = Handshake.init(info_hash, peer_id) |> Handshake.serialize()
-    socket |> Socket.Stream.send!(handshake)
+
+    try do
+      socket |> Socket.Stream.send!(handshake)
+    rescue
+      _e ->
+        exit(:normal)
+    end
+
     socket
   end
 
   def receive_handshake(socket) do
-    IO.puts("In receive_handshake")
     socket |> Socket.packet!(:raw)
 
     message = socket |> recv_byte!(1)
@@ -79,6 +100,13 @@ defmodule Client do
     }
   end
 
+  def verify_checksum(received_hash, info_hash) do
+    if received_hash != info_hash do
+      IO.puts("Wrong checksum")
+      exit(:wrong_checksum)
+    end
+  end
+
   @doc """
   Instruct the server to report the current GenServer state
   """
@@ -87,11 +115,10 @@ defmodule Client do
   end
 
   @doc """
-  Instruct the server to complete a handshake with the remaining peers
-  Only retains peers with whom we're able to complete a handshake
+  Complete a handshake with a peer
   """
-  def complete_handshake(server, peer) do
-    # TODO: Start here
+  def complete_handshake(server) do
+    GenServer.cast(server, :complete_handshake)
   end
 
   def recv_byte!(socket, count) do

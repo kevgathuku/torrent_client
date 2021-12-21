@@ -36,19 +36,30 @@ defmodule Downloader do
             peer
         end
       end)
-
-    {:noreply, %{state | peers: peers_with_pids}}
-  end
-
-  @impl true
-  def handle_cast({:filter_peers, :connected}, state) do
-    peers_with_pids =
-      state.peers
       |> Enum.reject(fn peer -> is_nil(peer.pid) end)
 
     IO.puts("Remaining Peers: #{Enum.count(peers_with_pids)}")
 
     {:noreply, %{state | peers: peers_with_pids}}
+  end
+
+  @impl true
+  def handle_cast({:filter_peers, :handshake}, state) do
+    state.peers
+    |> Enum.each(fn peer -> Client.complete_handshake(peer.pid) end)
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:filter_peers, :alive}, state) do
+    handshaked_peers =
+      state.peers
+      |> Enum.filter(fn peer -> Process.alive?(peer.pid) end)
+
+    IO.puts("Handshaked Peers: #{Enum.count(handshaked_peers)}")
+
+    {:noreply, %{state | peers: handshaked_peers}}
   end
 
   @impl true
@@ -66,10 +77,17 @@ defmodule Downloader do
   end
 
   @doc """
-  Instruct the server to filter out the unresponsive peers
+  Instruct the server to complete a handshake with peers
   """
-  def filter_connected_peers(server) do
-    GenServer.cast(server, {:filter_peers, :connected})
+  def handshake_peer_clients(server) do
+    GenServer.cast(server, {:filter_peers, :handshake})
+  end
+
+  @doc """
+  Instruct the server to only keep processes that are still alive
+  """
+  def filter_alive_peers(server) do
+    GenServer.cast(server, {:filter_peers, :alive})
   end
 
   @doc """
