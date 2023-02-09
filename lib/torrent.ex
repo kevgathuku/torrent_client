@@ -36,7 +36,7 @@ defmodule Torrent do
 
   def info_hash(bento_torrent) do
     bento_torrent.info
-    |> Map.take([:name, :length, :"piece length", :pieces])
+    |> Map.from_struct()
     |> Bento.encode!()
     |> sha_sum()
   end
