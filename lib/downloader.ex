@@ -101,23 +101,26 @@ defmodule Downloader do
     File.read!(filename) |> Bento.torrent!()
   end
 
-  def test_file do
+  def debian_torrent_file do
     "test/_data/debian-10.2.0-amd64-netinst.iso.torrent"
   end
 
-  def sample_torrent() do
-    test_file()
+  def debian_bento_torrent() do
+    debian_torrent_file()
     |> to_bento_torrent()
-    |> Torrent.from_bento(%{peer_id: @peer_id})
   end
 
-  def tracker_peers(torrent \\ sample_torrent()) do
+  def bento_to_torrent(bento_torrent \\ debian_bento_torrent()) do
+    bento_torrent |> Torrent.from_bento(%{peer_id: @peer_id})
+  end
+
+  def tracker_peers(torrent \\ debian_bento_torrent()) do
     torrent |> Tracker.peers(@peer_id, @port)
   end
 
-  def filter_peers(torrent \\ sample_torrent()) do
+  def filter_peers(torrent \\ debian_bento_torrent()) do
     {:ok, server} = start_link(torrent)
-    filter_connected_peers(server)
+    # filter_connected_peers(server)
 
     # TODO: Call this after some time
     # OR have GenServer tell us when the filtering is complete
