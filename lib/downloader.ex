@@ -105,13 +105,8 @@ defmodule Downloader do
     File.read!(filename) |> Bento.torrent!()
   end
 
-  def debian_bento_torrent() do
-    debian_torrent_file()
-    |> to_bento_torrent()
-  end
-
   def bento_to_torrent(bento_torrent) do
-    bento_torrent |> Torrent.from_bento(%{peer_id: @peer_id})
+    bento_torrent |> Torrent.from_bento()
   end
 
   def tracker_peers(bento_torrent) do
