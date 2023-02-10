@@ -5,8 +5,8 @@ defmodule Torrent do
   Convert from a bento torrent struct to our own torrent struct
   """
   def from_bento(bento_torrent) do
-    bento_torrent
-    |> Map.take([:announce])
+    struct(Torrent)
+    |> Map.put(:announce, bento_torrent.announce)
     |> Map.put(:name, bento_torrent.info.name)
     |> Map.put(:length, remaining(bento_torrent))
     |> Map.put(:info_hash, info_hash(bento_torrent))
