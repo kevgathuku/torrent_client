@@ -1,18 +1,29 @@
 defmodule Torrent do
-  defstruct [:announce, :name, :length, :pieces, :piece_length, :info_hash]
+  defstruct [:announce, :name, :length, :piece_hashes, :piece_length, :info_hash]
 
   @doc """
   Convert from a bento torrent struct to our own torrent struct
   """
-  def from_bento(bento_torrent, opts) do
+  def from_bento(bento_torrent) do
     bento_torrent
     |> Map.take([:announce])
     |> Map.put(:name, bento_torrent.info.name)
     |> Map.put(:length, remaining(bento_torrent))
     |> Map.put(:info_hash, info_hash(bento_torrent))
     |> Map.put(:piece_length, Map.get(bento_torrent.info, :"piece length"))
-    |> Map.put(:pieces, bento_torrent.info.pieces)
-    |> Map.merge(opts)
+    |> Map.put(:piece_hashes, split_pieces_hash(bento_torrent.info.pieces))
+  end
+
+  def split_pieces_hash(pieces) when byte_size(pieces) < 20,
+    do: {:error, "Received malformed pieces. Length: #{byte_size(pieces)}"}
+
+  def split_pieces_hash(pieces) do
+    hash_length = 20
+    pieces_length = byte_size(pieces)
+
+    num_hashes = div(pieces_length, hash_length)
+
+    for i <- 0..(num_hashes-1), do: binary_part(pieces, i , 20)
   end
 
   @doc """
