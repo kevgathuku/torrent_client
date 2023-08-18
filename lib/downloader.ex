@@ -101,6 +101,10 @@ defmodule Downloader do
     "test/_data/debian-10.2.0-amd64-netinst.iso.torrent"
   end
 
+  def big_buck_torrent_file do
+    "test/_data/BigBuckBunny.torrent"
+  end
+
   def to_bento_torrent(filename) do
     File.read!(filename) |> Bento.torrent!()
   end
