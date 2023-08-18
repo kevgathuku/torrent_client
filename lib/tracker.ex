@@ -48,7 +48,7 @@ defmodule Tracker do
   Get the peers for the torrent file
   Accepts our custom Torrent struct
   """
-  def peers(torrent, peer_id, port) do
+  def get_peers(torrent, peer_id, port) do
     # TODO: Add error handling for the request
     response =
       torrent

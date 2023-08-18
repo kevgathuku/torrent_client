@@ -5,4 +5,8 @@ defmodule Utils do
   def generate_peer_id() do
     :crypto.strong_rand_bytes(20) |> Base.encode64() |> binary_part(0, 20)
   end
+
+  def test_torrent_file do
+    "test/_data/signofthecross_1309_librivox_archive.torrent"
+  end
 end
