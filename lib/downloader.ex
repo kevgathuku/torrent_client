@@ -7,17 +7,55 @@ defmodule Downloader do
 
   @port 6882
   @peer_id Utils.generate_peer_id()
-  @initial_state %{torrent: nil, peers: nil}
 
-  @impl true
-  def init(state) do
-    {:ok, state}
+  def start_link(torrent_filename) do
+    GenServer.start_link(__MODULE__, torrent_filename, name: __MODULE__)
   end
 
-  def start_link(torrent) do
-    peers = torrent |> tracker_peers()
-    state = @initial_state |> Map.put(:torrent, torrent) |> Map.put(:peers, peers)
-    GenServer.start_link(__MODULE__, state, name: Downloader)
+  @doc """
+  Instruct the server to connect to the peers
+  """
+  def start_peer_clients(server) do
+    GenServer.cast(server, :start_peer_clients)
+  end
+
+  @doc """
+  Instruct the server to complete a handshake with peers
+  """
+  def handshake_peer_clients(server) do
+    GenServer.cast(server, {:filter_peers, :handshake})
+  end
+
+  @doc """
+  Instruct the server to only keep processes that are still alive
+  """
+  def filter_alive_peers(server) do
+    GenServer.cast(server, {:filter_peers, :alive})
+  end
+
+  @doc """
+  Instruct the server to report the current GenServer state
+  """
+  def report(server) do
+    GenServer.call(server, :report)
+  end
+
+  @doc """
+  Invoked when the server is started.
+  start_link/3 will block until it returns.
+  """
+  @impl true
+  def init(torrent_filename) do
+    bento_torrent = to_bento_torrent(torrent_filename)
+    own_torrent = to_own_torrent(bento_torrent)
+
+    state =
+      %{}
+      |> Map.put(:filename, torrent_filename)
+      |> Map.put(:bento_torrent, bento_torrent)
+      |> Map.put(:own_torrent, own_torrent)
+
+    {:ok, state}
   end
 
   @impl true
@@ -69,37 +107,8 @@ defmodule Downloader do
     {:reply, state, state}
   end
 
-  @doc """
-  Instruct the server to connect to the peers
-  """
-  def start_peer_clients(server) do
-    GenServer.cast(server, :start_peer_clients)
-  end
-
-  @doc """
-  Instruct the server to complete a handshake with peers
-  """
-  def handshake_peer_clients(server) do
-    GenServer.cast(server, {:filter_peers, :handshake})
-  end
-
-  @doc """
-  Instruct the server to only keep processes that are still alive
-  """
-  def filter_alive_peers(server) do
-    GenServer.cast(server, {:filter_peers, :alive})
-  end
-
-  @doc """
-  Instruct the server to report the current GenServer state
-  """
-  def report(server) do
-    GenServer.call(server, :report)
-  end
-
-  def to_own_torrent(filename) do
-    File.read!(filename)
-    |> Bento.torrent!()
+  def to_own_torrent(bento_torrent) do
+    bento_torrent
     |> Torrent.from_bento()
   end
 
