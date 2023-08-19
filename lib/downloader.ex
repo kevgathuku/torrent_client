@@ -41,6 +41,13 @@ defmodule Downloader do
   end
 
   @doc """
+  Stop the server
+  """
+  def stop(server) do
+    GenServer.cast(server, :stop)
+  end
+
+  @doc """
   Invoked when the server is started.
   start_link/3 will block until it returns.
   """
@@ -99,6 +106,9 @@ defmodule Downloader do
 
     {:noreply, %{state | peers: handshaked_peers}}
   end
+
+  @impl true
+  def handle_cast(:stop, state), do: {:stop, :normal, state}
 
   @impl true
   def handle_call(:report, _from, state) do
