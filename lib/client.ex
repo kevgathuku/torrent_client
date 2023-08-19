@@ -10,11 +10,11 @@ defmodule Client do
 
   @initial_state %{socket: nil, peer: nil, info_hash: nil, peer_id: nil}
 
-  def start_link(torrent, peer) do
+  def start_link(torrent, peer, peer_id) do
     state =
       @initial_state
       |> Map.put(:info_hash, torrent.info_hash)
-      |> Map.put(:peer_id, torrent.peer_id)
+      |> Map.put(:peer_id, peer_id)
       |> Map.put(:peer, peer)
 
     GenServer.start_link(__MODULE__, state)

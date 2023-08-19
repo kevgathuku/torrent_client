@@ -65,6 +65,8 @@ defmodule Downloader do
 
     state =
       %{}
+      |> Map.put(:peer_id, @peer_id)
+      |> Map.put(:port, @port)
       |> Map.put(:filename, torrent_filename)
       |> Map.put(:own_torrent, own_torrent)
 
@@ -72,9 +74,8 @@ defmodule Downloader do
   end
 
   @impl true
-  def handle_cast(:fetch_peers, %{own_torrent: own_torrent} = state) do
-    IO.puts("Inside fetch_peers")
-    peers = tracker_peers(own_torrent)
+  def handle_cast(:fetch_peers, %{own_torrent: own_torrent, peer_id: peer_id, port: port} = state) do
+    peers = tracker_peers(own_torrent, peer_id, port)
 
     IO.puts("Found Peers: #{Enum.count(peers)}")
 
@@ -82,11 +83,14 @@ defmodule Downloader do
   end
 
   @impl true
-  def handle_cast(:start_peer_clients, state) do
+  def handle_cast(
+        :start_peer_clients,
+        %{peers: peers, peer_id: peer_id, own_torrent: own_torrent} = state
+      ) do
     peers_with_pids =
-      state.peers
+      peers
       |> Enum.map(fn peer ->
-        case Client.start_link(state.torrent, peer) do
+        case Client.start_link(own_torrent, peer, peer_id) do
           {:ok, pid} ->
             %{peer | pid: pid}
 
@@ -101,7 +105,7 @@ defmodule Downloader do
 
     IO.puts("Remaining Peers: #{Enum.count(peers_with_pids)}")
 
-    {:noreply, %{state | peers: peers_with_pids}}
+    {:noreply, Map.put(state, :peers, peers_with_pids)}
   end
 
   @impl true
@@ -143,8 +147,8 @@ defmodule Downloader do
     |> Bento.torrent!()
   end
 
-  def tracker_peers(own_torrent) do
-    Tracker.get_peers(own_torrent, @peer_id, @port)
+  def tracker_peers(own_torrent, peer_id, port) do
+    Tracker.get_peers(own_torrent, peer_id, port)
   end
 
   def test_run() do
