@@ -21,6 +21,7 @@ defmodule Client do
   end
 
   def init_connection(server) do
+    # TODO: Start from here. Debug this connection and ensure we can connect to the peer
     GenServer.cast(server, :init_connection)
   end
 
@@ -41,6 +42,7 @@ defmodule Client do
   # Server callbacks
   @impl true
   def init(init_state) do
+    GenServer.cast(self(), :init_connection)
     {:ok, init_state}
   end
 
@@ -89,6 +91,7 @@ defmodule Client do
   """
   def connect(peer) do
     # Socket.TCP.connect(peer.ip, peer.port, timeout: 3000)
+    # TODO: Port should be the port number on the remote host
     case :gen_tcp.connect(peer.ip, peer.port, [:binary, active: false, connect_timeout: @timeout]) do
       {:ok, socket} ->
         {:ok, socket}
