@@ -1,6 +1,25 @@
 defmodule Tracker do
   use Tesla
 
+  @spec get_peers(
+          Torrent.t(),
+          String.t(),
+          integer()
+        ) :: {:error, any} | {:ok, list}
+  @doc """
+  Request the peers from the tracker using the custom torrent file
+  Accepts our custom Torrent struct
+  """
+  def get_peers(torrent, peer_id, port) do
+    case get(tracker_url(torrent, peer_id, port)) do
+      {:ok, response} ->
+        parse_peer_response(response)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   @doc """
   Returns the Tracker URL with the params attached
   Accepts our custom Torrent struct
@@ -23,38 +42,33 @@ defmodule Tracker do
     "#{torrent.announce}?#{params}"
   end
 
+  defp parse_peer_response(response) do
+    decoded_response = Bento.decode!(response.body)
+
+    case decoded_response do
+      %{"failure reason" => reason} ->
+        {:error, reason}
+
+      %{"peers" => peers} ->
+        {:ok, extract_peers(peers)}
+
+      _ ->
+        {:error, "Unknown response from tracker"}
+    end
+  end
+
+  @spec extract_peers(binary) :: list
   @doc """
   Extract peers from the tracker response's peers binary data
   """
   def extract_peers(data) when is_binary(data) do
     peer_size = 6
-    num_peers = (byte_size(data) / peer_size) |> floor
+    num_peers = floor(byte_size(data) / peer_size)
 
     # Extract peers from the binary data into a list of peers
     Enum.reduce(0..(num_peers - 1), [], fn index, acc ->
       List.insert_at(acc, index, binary_part(data, index * peer_size, peer_size))
     end)
     |> Enum.map(&Peer.parse_peer/1)
-  end
-
-  def parse_peer_response(response) do
-    response.body
-    |> Bento.decode!()
-    |> Map.get("peers")
-    |> extract_peers()
-  end
-
-  @doc """
-  Get the peers for the torrent file
-  Accepts our custom Torrent struct
-  """
-  def get_peers(torrent, peer_id, port) do
-    # TODO: Add error handling for the request
-    response =
-      torrent
-      |> tracker_url(peer_id, port)
-      |> get!()
-
-    parse_peer_response(response)
   end
 end

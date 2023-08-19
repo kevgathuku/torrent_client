@@ -3,6 +3,7 @@ defmodule Downloader do
   Entry point for the Downloader.
   """
 
+  require Logger
   use GenServer
 
   @port 6882
@@ -75,11 +76,15 @@ defmodule Downloader do
 
   @impl true
   def handle_cast(:fetch_peers, %{own_torrent: own_torrent, peer_id: peer_id, port: port} = state) do
-    peers = tracker_peers(own_torrent, peer_id, port)
+    case tracker_peers(own_torrent, peer_id, port) do
+      [] ->
+        Logger.error("ERROR: No peers found")
+        {:stop, "No peers found", state}
 
-    IO.puts("Found Peers: #{Enum.count(peers)}")
-
-    {:noreply, Map.put(state, :peers, peers)}
+      peers ->
+        Logger.info("Found Peers: #{Enum.count(peers)}")
+        {:noreply, Map.put(state, :peers, peers)}
+    end
   end
 
   @impl true
@@ -103,7 +108,7 @@ defmodule Downloader do
       end)
       |> Enum.reject(fn peer -> is_nil(peer.pid) end)
 
-    IO.puts("Started client process for peers: #{Enum.count(peers_with_pids)}")
+    Logger.debug("Started client process for peers: #{Enum.count(peers_with_pids)}")
 
     {:noreply, Map.put(state, :peers, peers_with_pids)}
   end
@@ -148,21 +153,29 @@ defmodule Downloader do
   end
 
   def tracker_peers(own_torrent, peer_id, port) do
-    Tracker.get_peers(own_torrent, peer_id, port)
+    case Tracker.get_peers(own_torrent, peer_id, port) do
+      {:ok, peers} ->
+        Logger.info("Found Peers: #{Enum.count(peers)}")
+        peers
+
+      {:error, reason} ->
+        Logger.error("ERROR: #{reason}")
+        []
+    end
   end
 
   def test_run() do
     torrent_filename = Utils.test_torrent_file()
     # Start the server
-    {:ok, server} = start_link(torrent_filename)
+    {:ok, pid} = start_link(torrent_filename)
     # Fetch peers
-    fetch_peers(server)
+    fetch_peers(pid)
 
     # filter_connected_peers(server)
 
     # TODO: Call this after some time
     # OR have GenServer tell us when the filtering is complete
-    state = report(server)
+    state = report(pid)
     connected_peers = Enum.count(state.peers)
     IO.puts("Connected peers: #{connected_peers}")
   end
