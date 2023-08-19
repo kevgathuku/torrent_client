@@ -3,7 +3,7 @@ defmodule Peer do
   A struct representing a peer.
   """
 
-defstruct [:ip, :port, :pid]
+defstruct [:ip, :port, :ip_tuple, :pid]
 require Logger
 
   @doc """
@@ -17,6 +17,6 @@ require Logger
 
     Logger.info("Parsed peer IP: #{ip} Port: #{port}")
 
-    %Peer{ip: ip, port: port}
+    %Peer{ip: ip, ip_tuple: {ip0, ip1, ip2, ip3}, port: port}
   end
 end
