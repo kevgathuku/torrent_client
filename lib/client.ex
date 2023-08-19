@@ -90,9 +90,8 @@ defmodule Client do
   Instruct the server to create a connection to the specified peer
   """
   def connect(peer) do
-    # Socket.TCP.connect(peer.ip, peer.port, timeout: 3000)
-    # TODO: Port should be the port number on the remote host
-    case :gen_tcp.connect(peer.ip, peer.port, [:binary, active: false, connect_timeout: @timeout]) do
+    # Socket.TCP.connect(peer.ip, peer.port, timeout: @timeout)
+    case :gen_tcp.connect(peer.ip_tuple, peer.port, [:binary, active: false], @timeout) do
       {:ok, socket} ->
         {:ok, socket}
 

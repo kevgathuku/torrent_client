@@ -159,7 +159,7 @@ defmodule Downloader do
         peers
 
       {:error, reason} ->
-        Logger.error("ERROR: #{reason}")
+        Logger.error("Get Peers Error: #{reason}")
         []
     end
   end
