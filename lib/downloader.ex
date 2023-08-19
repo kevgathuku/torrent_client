@@ -127,7 +127,7 @@ defmodule Downloader do
       state.peers
       |> Enum.filter(fn peer -> Process.alive?(peer.pid) end)
 
-    IO.puts("Handshaked Peers: #{Enum.count(handshaked_peers)}")
+    Logger.debug("Handshaked Peers: #{Enum.count(handshaked_peers)}")
 
     {:noreply, %{state | peers: handshaked_peers}}
   end
@@ -177,6 +177,6 @@ defmodule Downloader do
     # OR have GenServer tell us when the filtering is complete
     state = report(pid)
     connected_peers = Enum.count(state.peers)
-    IO.puts("Connected peers: #{connected_peers}")
+    Logger.debug("Connected peers: #{connected_peers}")
   end
 end
