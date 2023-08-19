@@ -103,7 +103,7 @@ defmodule Downloader do
       end)
       |> Enum.reject(fn peer -> is_nil(peer.pid) end)
 
-    IO.puts("Remaining Peers: #{Enum.count(peers_with_pids)}")
+    IO.puts("Started client process for peers: #{Enum.count(peers_with_pids)}")
 
     {:noreply, Map.put(state, :peers, peers_with_pids)}
   end

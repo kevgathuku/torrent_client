@@ -5,37 +5,58 @@ defmodule Client do
   """
 
   require Logger
-
   use GenServer
 
-  @initial_state %{socket: nil, peer: nil, info_hash: nil, peer_id: nil}
+  # Timeout in milliseconds for connecting to a peer
+  @timeout 3000
 
   def start_link(torrent, peer, peer_id) do
-    state =
-      @initial_state
-      |> Map.put(:info_hash, torrent.info_hash)
-      |> Map.put(:peer_id, peer_id)
-      |> Map.put(:peer, peer)
+    state = %{
+      peer: peer,
+      info_hash: torrent.info_hash,
+      peer_id: peer_id
+    }
 
-    GenServer.start_link(__MODULE__, state)
+    GenServer.start_link(__MODULE__, state, name: __MODULE__)
+  end
+
+  def init_connection(server) do
+    GenServer.cast(server, :init_connection)
+  end
+
+  @doc """
+  Complete a handshake with a peer
+  """
+  def complete_handshake(server) do
+    GenServer.cast(server, :complete_handshake)
+  end
+
+  @doc """
+  Instruct the server to report the current GenServer state
+  """
+  def report(server) do
+    GenServer.call(server, :report)
+  end
+
+  # Server callbacks
+  @impl true
+  def init(init_state) do
+    {:ok, init_state}
   end
 
   @impl true
-  def init(init_state) do
-    # Initiate connection with peer
-    # init_state -> has peer_id, peer and info_hash
-    %{peer: peer} = init_state
-
+  def handle_cast(
+        :init_connection,
+        %{peer: peer} = state
+      ) do
     case connect(peer) do
       {:ok, socket} ->
         IO.puts("Peer: " <> peer.ip <> " is connected")
 
-        {:ok, %{init_state | socket: socket}}
+        {:noreply, %{state | socket: socket}}
 
       {:error, _} ->
-        IO.puts("ERROR: Unable to connect to Peer: #{peer.ip}")
-        # the process will exit normally without entering the loop
-        :ignore
+        {:stop, "ERROR: Unable to connect to Peer: #{peer.ip}", state}
     end
   end
 
@@ -67,7 +88,20 @@ defmodule Client do
   Instruct the server to create a connection to the specified peer
   """
   def connect(peer) do
-    Socket.TCP.connect(peer.ip, peer.port, timeout: 3000)
+    # Socket.TCP.connect(peer.ip, peer.port, timeout: 3000)
+    case :gen_tcp.connect(peer.ip, peer.port, [:binary, active: false, connect_timeout: @timeout]) do
+      {:ok, socket} ->
+        {:ok, socket}
+
+      {:error, :econnrefused} ->
+        {:error, "Connection refused"}
+
+      {:error, :etimedout} ->
+        {:error, "Connection timed out"}
+
+      {:error, _} ->
+        {:error, "Failed to connect to peer"}
+    end
   end
 
   def send_handshake(socket, info_hash, peer_id) do
@@ -105,20 +139,6 @@ defmodule Client do
       IO.puts("Wrong checksum")
       exit(:wrong_checksum)
     end
-  end
-
-  @doc """
-  Instruct the server to report the current GenServer state
-  """
-  def report(server) do
-    GenServer.call(server, :report)
-  end
-
-  @doc """
-  Complete a handshake with a peer
-  """
-  def complete_handshake(server) do
-    GenServer.cast(server, :complete_handshake)
   end
 
   def recv_byte!(socket, count) do
