@@ -13,6 +13,13 @@ defmodule Downloader do
   end
 
   @doc """
+  Instruct the server to fetch the peers
+  """
+  def fetch_peers(server) do
+    GenServer.cast(server, :fetch_peers)
+  end
+
+  @doc """
   Instruct the server to connect to the peers
   """
   def start_peer_clients(server) do
@@ -62,6 +69,16 @@ defmodule Downloader do
       |> Map.put(:own_torrent, own_torrent)
 
     {:ok, state}
+  end
+
+  @impl true
+  def handle_cast(:fetch_peers, %{own_torrent: own_torrent} = state) do
+    IO.puts("Inside fetch_peers")
+    peers = tracker_peers(own_torrent)
+
+    IO.puts("Found Peers: #{Enum.count(peers)}")
+
+    {:noreply, Map.put(state, :peers, peers)}
   end
 
   @impl true
@@ -126,13 +143,13 @@ defmodule Downloader do
     |> Bento.torrent!()
   end
 
-  def tracker_peers(torrent) do
-    torrent |> Tracker.get_peers(@peer_id, @port)
+  def tracker_peers(own_torrent) do
+    Tracker.get_peers(own_torrent, @peer_id, @port)
   end
 
-  def filter_peers(torrent) do
-    # TODO: start_link belongs elsewhere
-    {:ok, server} = start_link(torrent)
+  def test_run() do
+    torrent_filename = Utils.test_torrent_file()
+    {:ok, server} = start_link(torrent_filename)
     # filter_connected_peers(server)
 
     # TODO: Call this after some time
