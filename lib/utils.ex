@@ -7,6 +7,6 @@ defmodule Utils do
   end
 
   def test_torrent_file do
-    "test/_data/signofthecross_1309_librivox_archive.torrent"
+    "test/_data/debian-12.1.0-amd64-netinst.iso.torrent"
   end
 end
