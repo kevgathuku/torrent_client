@@ -153,7 +153,11 @@ defmodule Downloader do
 
   def test_run() do
     torrent_filename = Utils.test_torrent_file()
+    # Start the server
     {:ok, server} = start_link(torrent_filename)
+    # Fetch peers
+    fetch_peers(server)
+
     # filter_connected_peers(server)
 
     # TODO: Call this after some time
