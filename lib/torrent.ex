@@ -1,38 +1,42 @@
 defmodule Torrent do
-  defstruct [:announce, :info_hash, :name, :length, :piece_hashes, :piece_length]
+  defstruct [:announce, :name, :length, :piece_hashes, :piece_length, :info_hash]
 
   @doc """
-  Returns the Tracker URL with the params attached
+  Convert from a bento torrent struct to our own torrent struct
   """
-  def tracker_url(torrent) do
-    params =
-      %{
-        info_hash: info_hash(torrent),
-        peer_id: Utils.generate_peer_id(),
-        # The port number this peer is listening on.
-        port: 6882,
-        uploaded: "0",
-        downloaded: "0",
-        # use the compact peer format
-        compact: "1",
-        left: remaining(torrent)
-      }
-      |> URI.encode_query()
+  def from_bento(bento_torrent) do
+    struct(Torrent)
+    |> Map.put(:announce, bento_torrent.announce)
+    |> Map.put(:name, bento_torrent.info.name)
+    |> Map.put(:length, remaining(bento_torrent))
+    |> Map.put(:info_hash, info_hash(bento_torrent))
+    |> Map.put(:piece_length, Map.get(bento_torrent.info, :"piece length"))
+    |> Map.put(:piece_hashes, split_pieces_hash(bento_torrent.info.pieces))
+  end
 
-    "#{torrent.announce}?#{params}"
+  def split_pieces_hash(pieces) when byte_size(pieces) < 20,
+    do: {:error, "Received malformed pieces. Length: #{byte_size(pieces)}"}
+
+  def split_pieces_hash(pieces) do
+    hash_length = 20
+    pieces_length = byte_size(pieces)
+
+    num_hashes = div(pieces_length, hash_length)
+
+    for i <- 0..(num_hashes-1), do: binary_part(pieces, i , 20)
   end
 
   @doc """
-  Get the remaining length from a torrent file
-  Works for both single file torrents and multi-file torrents
+  Get the remaining length from a Bento torrent file
+  Handles both single file torrents and multi-file torrents
   """
-  def remaining(torrent) do
-    case torrent.info do
+  def remaining(bento_torrent) do
+    case bento_torrent.info do
       %Bento.Metainfo.SingleFile{} ->
-        torrent.info.length
+        bento_torrent.info.length
 
       %Bento.Metainfo.MultiFile{} ->
-        Enum.reduce(torrent.info.files, 0, fn file, acc ->
+        Enum.reduce(bento_torrent.info.files, 0, fn file, acc ->
           acc + file.length
         end)
 
@@ -41,10 +45,9 @@ defmodule Torrent do
     end
   end
 
-  defp info_hash(torrent) do
-    torrent.info
+  def info_hash(bento_torrent) do
+    bento_torrent.info
     |> Map.from_struct()
-    |> Map.take([:name, :length, :"piece length", :pieces])
     |> Bento.encode!()
     |> sha_sum()
   end
@@ -53,12 +56,3 @@ defmodule Torrent do
     :crypto.hash(:sha, binary)
   end
 end
-
-# TorrentFile{
-# 	Announce:    bto.Announce,
-# 	InfoHash:    infoHash, #  computed the SHA-1 hash of the entire bencoded info dict
-# 	PieceHashes: pieceHashes, # a slice of hashes (each [20]byte) to enable easily accessing individual hashes
-# 	PieceLength: bto.Info.PieceLength,
-# 	Length:      bto.Info.Length,
-# 	Name:        bto.Info.Name,
-# }

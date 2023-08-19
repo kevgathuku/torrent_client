@@ -1,16 +1,60 @@
 defmodule Tracker do
   use Tesla
 
-  def request_peers(torrent) do
-    torrent
-    |> Torrent.tracker_url()
-    |> get!()
+  @doc """
+  Returns the Tracker URL with the params attached
+  Accepts our custom Torrent struct
+  """
+  def tracker_url(torrent, peer_id, port) do
+    params =
+      %{
+        info_hash: torrent.info_hash,
+        peer_id: peer_id,
+        # The port number this peer is listening on.
+        port: port,
+        uploaded: "0",
+        downloaded: "0",
+        # use the compact peer format
+        compact: "1",
+        left: torrent.length
+      }
+      |> URI.encode_query()
+
+    "#{torrent.announce}?#{params}"
+  end
+
+  @doc """
+  Extract peers from the tracker response's peers binary data
+  """
+  def extract_peers(data) when is_binary(data) do
+    peer_size = 6
+    num_peers = (byte_size(data) / peer_size) |> floor
+
+    # Extract peers from the binary data into a list of peers
+    Enum.reduce(0..(num_peers - 1), [], fn index, acc ->
+      List.insert_at(acc, index, binary_part(data, index * peer_size, peer_size))
+    end)
+    |> Enum.map(&Peer.parse_peer/1)
   end
 
   def parse_peer_response(response) do
     response.body
     |> Bento.decode!()
     |> Map.get("peers")
-    |> Peer.extract_peers()
+    |> extract_peers()
+  end
+
+  @doc """
+  Get the peers for the torrent file
+  Accepts our custom Torrent struct
+  """
+  def get_peers(torrent, peer_id, port) do
+    # TODO: Add error handling for the request
+    response =
+      torrent
+      |> tracker_url(peer_id, port)
+      |> get!()
+
+    parse_peer_response(response)
   end
 end
