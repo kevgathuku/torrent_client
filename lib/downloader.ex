@@ -59,7 +59,6 @@ defmodule Downloader do
     state =
       %{}
       |> Map.put(:filename, torrent_filename)
-      |> Map.put(:bento_torrent, bento_torrent)
       |> Map.put(:own_torrent, own_torrent)
 
     {:ok, state}
