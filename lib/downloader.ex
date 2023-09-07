@@ -69,6 +69,7 @@ defmodule Downloader do
       |> Map.put(:peer_id, @peer_id)
       |> Map.put(:port, @port)
       |> Map.put(:filename, torrent_filename)
+      |> Map.put(:decoded_torrent, bento_torrent)
       |> Map.put(:own_torrent, own_torrent)
 
     {:ok, state}
