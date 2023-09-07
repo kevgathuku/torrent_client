@@ -6,7 +6,7 @@ defmodule Utils do
     :crypto.strong_rand_bytes(20) |> Base.encode64() |> binary_part(0, 20)
   end
 
-  def test_torrent_file do
-    "test/_data/debian-12.1.0-amd64-netinst.iso.torrent"
+  def arch_torrent_file do
+    "test/_data/archlinux-2019.12.01-x86_64.iso.torrent"
   end
 end

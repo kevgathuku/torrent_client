@@ -143,6 +143,23 @@ defmodule Downloader do
     {:reply, state, state}
   end
 
+  @spec to_own_torrent(
+          atom
+          | %{
+              :announce => any,
+              :info => %{:name => any, :pieces => bitstring, optional(any) => any},
+              optional(any) => any
+            }
+        ) :: %{
+          :__struct__ => atom,
+          :announce => any,
+          :info_hash => any,
+          :length => any,
+          :name => any,
+          :piece_hashes => list | {:error, <<_::64, _::_*8>>},
+          :piece_length => any,
+          optional(atom) => any
+        }
   def to_own_torrent(bento_torrent) do
     bento_torrent
     |> Torrent.from_bento()
@@ -166,7 +183,7 @@ defmodule Downloader do
   end
 
   def test_run() do
-    torrent_filename = Utils.test_torrent_file()
+    torrent_filename = Utils.arch_torrent_file()
     # Start the server
     {:ok, pid} = start_link(torrent_filename)
     # Fetch peers

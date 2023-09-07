@@ -14,6 +14,7 @@ defmodule Torrent do
     |> Map.put(:piece_hashes, split_pieces_hash(bento_torrent.info.pieces))
   end
 
+  @spec split_pieces_hash(bitstring) :: list | {:error, <<_::64, _::_*8>>}
   def split_pieces_hash(pieces) when byte_size(pieces) < 20,
     do: {:error, "Received malformed pieces. Length: #{byte_size(pieces)}"}
 
@@ -23,7 +24,7 @@ defmodule Torrent do
 
     num_hashes = div(pieces_length, hash_length)
 
-    for i <- 0..(num_hashes-1), do: binary_part(pieces, i , 20)
+    for i <- 0..(num_hashes - 1), do: binary_part(pieces, i, 20)
   end
 
   @doc """
@@ -45,11 +46,20 @@ defmodule Torrent do
     end
   end
 
+  def bencode_info(bento_torrent) do
+    struct(BencodeInfo)
+    |> Map.put(:pieces, bento_torrent.info.pieces)
+    |> Map.put(:piece_length, Map.get(bento_torrent.info, :"piece length"))
+    |> Map.put(:length, remaining(bento_torrent))
+    |> Map.put(:name, bento_torrent.info.name)
+  end
+
+  @spec info_hash(atom | %{:info => any, optional(any) => any}) :: any
   def info_hash(bento_torrent) do
     bento_torrent.info
-    |> Map.from_struct()
     |> Bento.encode!()
     |> sha_sum()
+    |> Base.encode16()
   end
 
   defp sha_sum(binary) do
