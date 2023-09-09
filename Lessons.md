@@ -12,5 +12,6 @@
 ## Docs
 
 `info_hash` -> The 20 byte sha1 hash of the bencoded form of the info value from the metainfo file.
+- Needs to be url-encoded
 
 > The info-hash must be the hash of the encoded form as found in the .torrent file, which is identical to bdecoding the metainfo file, extracting the info dictionary and encoding it if and only if the bdecoder fully validated the input (e.g. key ordering, absence of leading zeros).

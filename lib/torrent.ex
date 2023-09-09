@@ -47,22 +47,18 @@ defmodule Torrent do
   end
 
   def bencode_info(bento_torrent) do
-    struct(BencodeInfo)
-    |> Map.put(:pieces, bento_torrent.info.pieces)
-    |> Map.put(:piece_length, Map.get(bento_torrent.info, :"piece length"))
-    |> Map.put(:length, remaining(bento_torrent))
-    |> Map.put(:name, bento_torrent.info.name)
+    # TODO: Single file for now
+    # Check how to do this correctly for multi-file torrents also
+    bento_torrent.info
+    |> Map.take([:name, :pieces, :"piece length", :length])
   end
 
   @spec info_hash(atom | %{:info => any, optional(any) => any}) :: any
   def info_hash(bento_torrent) do
-    bento_torrent.info
+    bento_torrent
+    |> bencode_info()
     |> Bento.encode!()
-    |> sha_sum()
+    |> Utils.sha_sum()
     |> Base.encode16()
-  end
-
-  defp sha_sum(binary) do
-    :crypto.hash(:sha, binary)
   end
 end

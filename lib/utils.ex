@@ -6,7 +6,15 @@ defmodule Utils do
     :crypto.strong_rand_bytes(20) |> Base.encode64() |> binary_part(0, 20)
   end
 
-  def arch_torrent_file do
-    "test/_data/archlinux-2019.12.01-x86_64.iso.torrent"
+  def single_file_torrent do
+    "test/_data/debian-12.1.0-amd64-netinst.iso.torrent"
+  end
+
+  def multi_file_torrent do
+    "test/_data/2718B3EC2A16AED3EF5A3DFD551EF7CCC5CC398B.torrent"
+  end
+
+  def sha_sum(binary) do
+    :crypto.hash(:sha, binary)
   end
 end
