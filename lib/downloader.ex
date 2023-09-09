@@ -80,7 +80,7 @@ defmodule Downloader do
     case tracker_peers(own_torrent, peer_id, port) do
       [] ->
         Logger.error("ERROR: No peers found")
-        {:stop, "No peers found", state}
+        {:noreply, Map.put(state, :peers, [])}
 
       peers ->
         Logger.info("Found Peers: #{Enum.count(peers)}")
