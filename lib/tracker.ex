@@ -20,6 +20,11 @@ defmodule Tracker do
     end
   end
 
+  @spec tracker_url(
+          Torrent.t(),
+          String.t(),
+          integer()
+        ) :: nonempty_binary
   @doc """
   Returns the Tracker URL with the params attached
   Accepts our custom Torrent struct

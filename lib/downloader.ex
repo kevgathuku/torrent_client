@@ -69,7 +69,7 @@ defmodule Downloader do
       |> Map.put(:peer_id, @peer_id)
       |> Map.put(:port, @port)
       |> Map.put(:filename, torrent_filename)
-      |> Map.put(:decoded_torrent, bento_torrent)
+      |> Map.put(:bento_torrent, bento_torrent)
       |> Map.put(:own_torrent, own_torrent)
 
     {:ok, state}
@@ -183,7 +183,7 @@ defmodule Downloader do
   end
 
   def test_run() do
-    torrent_filename = Utils.arch_torrent_file()
+    torrent_filename = Utils.single_file_torrent()
     # Start the server
     {:ok, pid} = start_link(torrent_filename)
     # Fetch peers
