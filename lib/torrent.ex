@@ -46,28 +46,6 @@ defmodule Torrent do
     end
   end
 
-  @spec bencode_info(
-          atom
-          | %{
-              :info => %{
-                :__struct__ => Bento.Metainfo.MultiFile | Bento.Metainfo.SingleFile,
-                optional(any) => any
-              },
-              optional(any) => any
-            }
-        ) :: map
-  def bencode_info(bento_torrent) do
-    case bento_torrent.info do
-      %Bento.Metainfo.SingleFile{} ->
-        bento_torrent.info
-        |> Map.take([:name, :pieces, :"piece length", :length])
-
-      %Bento.Metainfo.MultiFile{} ->
-        bento_torrent.info
-        |> Map.take([:name, :pieces, :"piece length", :files])
-    end
-  end
-
   @spec info_hash(%{
           :info => Bento.Metainfo.SingleFile.t() | Bento.Metainfo.MultiFile.t(),
           optional(any) => any
@@ -78,5 +56,27 @@ defmodule Torrent do
     |> Bento.encode!()
     |> Utils.sha_sum()
     |> Base.encode16()
+  end
+
+  @spec bencode_info(
+          atom
+          | %{
+              :info => %{
+                :__struct__ => Bento.Metainfo.MultiFile | Bento.Metainfo.SingleFile,
+                optional(any) => any
+              },
+              optional(any) => any
+            }
+        ) :: map
+  defp bencode_info(bento_torrent) do
+    case bento_torrent.info do
+      %Bento.Metainfo.SingleFile{} ->
+        bento_torrent.info
+        |> Map.take([:name, :pieces, :"piece length", :length])
+
+      %Bento.Metainfo.MultiFile{} ->
+        bento_torrent.info
+        |> Map.take([:name, :pieces, :"piece length", :files])
+    end
   end
 end

@@ -1,6 +1,8 @@
 defmodule Tracker do
   use Tesla
 
+  # TODO: Should this be a Genserver module?
+
   @spec get_peers(
           Torrent.t(),
           String.t(),
@@ -63,10 +65,7 @@ defmodule Tracker do
   end
 
   @spec extract_peers(binary) :: list
-  @doc """
-  Extract peers from the tracker response's peers binary data
-  """
-  def extract_peers(data) when is_binary(data) do
+  defp extract_peers(data) when is_binary(data) do
     peer_size = 6
     num_peers = floor(byte_size(data) / peer_size)
 
