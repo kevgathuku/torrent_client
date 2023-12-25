@@ -21,7 +21,7 @@ defmodule Tracker do
   Accepts our custom Torrent struct
   """
   def tracker_url(bento_torrent, peer_id, port) do
-    info_hash = Torrent.info_hash(bento_torrent) |> Base.decode16! |> URI.encode
+    info_hash = Torrent.info_hash(bento_torrent) |> Base.decode16!()
 
     params =
       %{
@@ -37,9 +37,7 @@ defmodule Tracker do
       }
       |> URI.encode_query()
 
-    "URL: #{bento_torrent.announce}?#{params}"
     "#{bento_torrent.announce}?#{params}"
-    # "http://tracker.opentrackr.org:1337/announce?#{params}"
   end
 
   defp parse_peer_response(response) do
