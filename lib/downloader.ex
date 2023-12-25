@@ -141,6 +141,7 @@ defmodule Downloader do
     {:reply, state, state}
   end
 
+  # TODO: Add error handling. No need to proceed if torrent file is wrong
   def parse_torrent_file(filename) do
     File.read!(filename)
     |> Bento.torrent!()

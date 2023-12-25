@@ -6,7 +6,7 @@ const multiFiletorrent = path.join(
   rootDir,
   "test",
   "_data",
-  "2718B3EC2A16AED3EF5A3DFD551EF7CCC5CC398B.torrent"
+  "big-buck-bunny.torrent"
 );
 const singleFiletorrent = path.join(
   rootDir,

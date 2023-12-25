@@ -17,7 +17,7 @@ defmodule TorrentTest do
       Downloader.parse_torrent_file(@multi_file_torrent)
       |> Torrent.info_hash()
 
-    assert info_hash == "2718B3EC2A16AED3EF5A3DFD551EF7CCC5CC398B"
+    assert info_hash == "DD8255ECDC7CA55FB0BBF81323D87062DB1F6D1C"
   end
 
   test "get piece hashes for a single file torrent" do

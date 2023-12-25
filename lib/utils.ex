@@ -11,7 +11,7 @@ defmodule Utils do
   end
 
   def multi_file_torrent do
-    "test/_data/2718B3EC2A16AED3EF5A3DFD551EF7CCC5CC398B.torrent"
+    "test/_data/big-buck-bunny.torrent"
   end
 
   def sha_sum(binary) do
