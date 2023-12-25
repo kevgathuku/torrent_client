@@ -1,28 +1,13 @@
 defmodule Torrent do
-  defstruct [:announce, :name, :length, :piece_hashes, :piece_length, :info_hash]
+  @hash_length 20
 
-  @doc """
-  Convert from a bento torrent struct to our own torrent struct
-  """
-  def from_bento(bento_torrent) do
-    struct(Torrent)
-    |> Map.put(:announce, bento_torrent.announce)
-    |> Map.put(:name, bento_torrent.info.name)
-    |> Map.put(:length, remaining(bento_torrent))
-    |> Map.put(:info_hash, info_hash(bento_torrent))
-    |> Map.put(:piece_length, Map.get(bento_torrent.info, :"piece length"))
-    |> Map.put(:piece_hashes, split_pieces_hash(bento_torrent.info.pieces))
-  end
-
-  @spec split_pieces_hash(bitstring) :: list | {:error, <<_::64, _::_*8>>}
-  def split_pieces_hash(pieces) when byte_size(pieces) < 20,
+  def get_piece_hashes(%{info: %{pieces: pieces}}) when byte_size(pieces) < 20,
     do: {:error, "Received malformed pieces. Length: #{byte_size(pieces)}"}
 
-  def split_pieces_hash(pieces) do
-    hash_length = 20
+  def get_piece_hashes(%{info: %{pieces: pieces}}) do
     pieces_length = byte_size(pieces)
 
-    num_hashes = div(pieces_length, hash_length)
+    num_hashes = div(pieces_length, @hash_length)
 
     for i <- 0..(num_hashes - 1), do: binary_part(pieces, i, 20)
   end
@@ -46,10 +31,10 @@ defmodule Torrent do
     end
   end
 
-  @spec info_hash(%{
-          :info => Bento.Metainfo.SingleFile.t() | Bento.Metainfo.MultiFile.t(),
-          optional(any) => any
-        }) :: any
+  @doc """
+  Compute the info hash from a Bento torrent file
+  Handles both single file torrents and multi-file torrents
+  """
   def info_hash(bento_torrent) do
     bento_torrent
     |> bencode_info()
@@ -58,16 +43,6 @@ defmodule Torrent do
     |> Base.encode16()
   end
 
-  @spec bencode_info(
-          atom
-          | %{
-              :info => %{
-                :__struct__ => Bento.Metainfo.MultiFile | Bento.Metainfo.SingleFile,
-                optional(any) => any
-              },
-              optional(any) => any
-            }
-        ) :: map
   defp bencode_info(bento_torrent) do
     case bento_torrent.info do
       %Bento.Metainfo.SingleFile{} ->

@@ -1,12 +1,12 @@
 defmodule TorrentTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
-  @multi_file_torrent "test/_data/2718B3EC2A16AED3EF5A3DFD551EF7CCC5CC398B.torrent"
-  @single_file_torrent "test/_data/debian-12.1.0-amd64-netinst.iso.torrent"
+  @multi_file_torrent Utils.multi_file_torrent
+  @single_file_torrent Utils.single_file_torrent
 
   test "calculates the correct info hash for single file torrent" do
     info_hash =
-      Downloader.to_bento_torrent(@single_file_torrent)
+      Downloader.parse_torrent_file(@single_file_torrent)
       |> Torrent.info_hash()
 
     assert info_hash == "A9164E99D5181CFEF0C23C209334103619080908"
@@ -14,9 +14,23 @@ defmodule TorrentTest do
 
   test "calculates the correct info hash for multi file torrent" do
     info_hash =
-      Downloader.to_bento_torrent(@multi_file_torrent)
+      Downloader.parse_torrent_file(@multi_file_torrent)
       |> Torrent.info_hash()
 
     assert info_hash == "2718B3EC2A16AED3EF5A3DFD551EF7CCC5CC398B"
+  end
+
+  test "get piece hashes for a single file torrent" do
+    bento_torrent = Downloader.parse_torrent_file(Utils.single_file_torrent)
+    piece_hashes = Torrent.get_piece_hashes(bento_torrent)
+
+    assert Enum.all?(piece_hashes, fn x -> byte_size(x) == 20 end) == true
+  end
+
+  test "get piece hashes for a multi file torrent" do
+    bento_torrent = Downloader.parse_torrent_file(Utils.multi_file_torrent)
+    piece_hashes = Torrent.get_piece_hashes(bento_torrent)
+
+    assert Enum.all?(piece_hashes, fn x -> byte_size(x) == 20 end) == true
   end
 end
