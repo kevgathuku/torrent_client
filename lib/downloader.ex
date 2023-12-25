@@ -61,8 +61,7 @@ defmodule Downloader do
   """
   @impl true
   def init(torrent_filename) do
-    bento_torrent = to_bento_torrent(torrent_filename)
-    own_torrent = to_own_torrent(bento_torrent)
+    bento_torrent = parse_torrent_file(torrent_filename)
 
     state =
       %{}
@@ -70,7 +69,6 @@ defmodule Downloader do
       |> Map.put(:port, @port)
       |> Map.put(:filename, torrent_filename)
       |> Map.put(:bento_torrent, bento_torrent)
-      |> Map.put(:own_torrent, own_torrent)
 
     {:ok, state}
   end
@@ -143,29 +141,7 @@ defmodule Downloader do
     {:reply, state, state}
   end
 
-  @spec to_own_torrent(
-          atom
-          | %{
-              :announce => any,
-              :info => %{:name => any, :pieces => bitstring, optional(any) => any},
-              optional(any) => any
-            }
-        ) :: %{
-          :__struct__ => atom,
-          :announce => any,
-          :info_hash => any,
-          :length => any,
-          :name => any,
-          :piece_hashes => list | {:error, <<_::64, _::_*8>>},
-          :piece_length => any,
-          optional(atom) => any
-        }
-  def to_own_torrent(bento_torrent) do
-    bento_torrent
-    |> Torrent.from_bento()
-  end
-
-  def to_bento_torrent(filename) do
+  def parse_torrent_file(filename) do
     File.read!(filename)
     |> Bento.torrent!()
   end
