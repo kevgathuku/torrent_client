@@ -74,8 +74,8 @@ defmodule Downloader do
   end
 
   @impl true
-  def handle_cast(:fetch_peers, %{own_torrent: own_torrent, peer_id: peer_id, port: port} = state) do
-    case tracker_peers(own_torrent, peer_id, port) do
+  def handle_cast(:fetch_peers, %{bento_torrent: bento_torrent, peer_id: peer_id, port: port} = state) do
+    case tracker_peers(bento_torrent, peer_id, port) do
       [] ->
         Logger.error("ERROR: No peers found")
         {:noreply, Map.put(state, :peers, [])}
@@ -146,8 +146,8 @@ defmodule Downloader do
     |> Bento.torrent!()
   end
 
-  def tracker_peers(own_torrent, peer_id, port) do
-    case Tracker.get_peers(own_torrent, peer_id, port) do
+  def tracker_peers(bento_torrent, peer_id, port) do
+    case Tracker.get_peers(bento_torrent, peer_id, port) do
       {:ok, peers} ->
         Logger.info("Found Peers: #{Enum.count(peers)}")
         peers

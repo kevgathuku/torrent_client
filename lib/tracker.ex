@@ -2,18 +2,12 @@ defmodule Tracker do
   use Tesla
 
   # TODO: Should this be a Genserver module?
-
-  @spec get_peers(
-          Torrent.t(),
-          String.t(),
-          integer()
-        ) :: {:error, any} | {:ok, list}
   @doc """
   Request the peers from the tracker using the custom torrent file
   Accepts our custom Torrent struct
   """
-  def get_peers(torrent, peer_id, port) do
-    case get(tracker_url(torrent, peer_id, port)) do
+  def get_peers(bento_torrent, peer_id, port) do
+    case get(tracker_url(bento_torrent, peer_id, port)) do
       {:ok, response} ->
         parse_peer_response(response)
 
@@ -22,19 +16,15 @@ defmodule Tracker do
     end
   end
 
-  @spec tracker_url(
-          Torrent.t(),
-          String.t(),
-          integer()
-        ) :: nonempty_binary
   @doc """
   Returns the Tracker URL with the params attached
   Accepts our custom Torrent struct
   """
-  def tracker_url(torrent, peer_id, port) do
+  def tracker_url(bento_torrent, peer_id, port) do
+    info_hash = Torrent.info_hash(bento_torrent)
     params =
       %{
-        info_hash: torrent.info_hash,
+        info_hash: info_hash,
         peer_id: peer_id,
         # The port number this peer is listening on.
         port: port,
@@ -42,17 +32,15 @@ defmodule Tracker do
         downloaded: "0",
         # use the compact peer format
         compact: "1",
-        left: torrent.length
+        left: Torrent.remaining(bento_torrent)
       }
       |> URI.encode_query()
 
-    "#{torrent.announce}?#{params}"
+    "#{bento_torrent.announce}?#{params}"
   end
 
   defp parse_peer_response(response) do
-    decoded_response = Bento.decode!(response.body)
-
-    case decoded_response do
+    case Bento.decode!(response.body) do
       %{"failure reason" => reason} ->
         {:error, reason}
 
