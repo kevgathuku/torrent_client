@@ -73,6 +73,6 @@ defmodule Tracker do
     Enum.reduce(0..(num_peers - 1), [], fn index, acc ->
       List.insert_at(acc, index, binary_part(data, index * peer_size, peer_size))
     end)
-    |> Enum.map(&Peer.parse_peer/1)
+    |> Enum.map(&Peer.build_peer/1)
   end
 end

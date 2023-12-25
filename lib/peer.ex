@@ -2,14 +2,13 @@ defmodule Peer do
   @moduledoc """
   A struct representing a peer.
   """
-
-defstruct [:ip, :port, :ip_tuple, :pid]
-require Logger
+  defstruct [:ip, :port, :ip_tuple, :pid]
+  require Logger
 
   @doc """
   Parses a peer's binary data into a Peer struct
   """
-  def parse_peer(data) do
+  def build_peer(data) do
     <<ip0::8-unsigned-big-integer, ip1::8-unsigned-big-integer, ip2::8-unsigned-big-integer,
       ip3::8-unsigned-big-integer, port::16-integer-big-unsigned>> = data
 
