@@ -10,8 +10,8 @@ defmodule DownloaderTest do
         %{server: server}
 
       _ ->
-        # No need to start a process with invalid data
-        %{}
+        # We can simply return :ok when we don't want to add any extra metadata
+        :ok
     end
   end
 
