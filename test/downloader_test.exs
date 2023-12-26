@@ -2,11 +2,12 @@ defmodule DownloaderTest do
   use ExUnit.Case, async: true
 
   setup context do
-    # Read the :torrent_file_path tag value
     case context do
+      # If torrent_file_path is available in the context
       %{torrent_file_path: torrent_file_path} ->
-        registry = start_supervised!({Downloader, [torrent_file_path]})
-        %{registry: registry}
+        server = start_supervised!({Downloader, [torrent_file_path]})
+        # Context to be available to tests
+        %{server: server}
 
       _ ->
         # No need to start a process with invalid data
@@ -33,15 +34,15 @@ defmodule DownloaderTest do
   end
 
   @tag torrent_file_path: Utils.single_file_torrent()
-  test "process starts when provided a valid single file torrent path", %{registry: registry} do
-    state = Downloader.report(registry)
+  test "process starts when provided a valid single file torrent path", %{server: server} do
+    state = Downloader.report(server)
 
     assert state.bento_torrent.__struct__ == Bento.Metainfo.Torrent
   end
 
   @tag torrent_file_path: Utils.multi_file_torrent()
-  test "process starts when provided a valid multi file torrent path", %{registry: registry} do
-    state = Downloader.report(registry)
+  test "process starts when provided a valid multi file torrent path", %{server: server} do
+    state = Downloader.report(server)
 
     assert state.bento_torrent.__struct__ == Bento.Metainfo.Torrent
   end

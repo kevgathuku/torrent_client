@@ -1,8 +1,8 @@
 defmodule TorrentTest do
   use ExUnit.Case, async: true
 
-  @multi_file_torrent Utils.multi_file_torrent
-  @single_file_torrent Utils.single_file_torrent
+  @multi_file_torrent Utils.multi_file_torrent()
+  @single_file_torrent Utils.single_file_torrent()
 
   test "calculates the correct info hash for single file torrent" do
     {:ok, bento_torrent} = Downloader.parse_torrent_file(@single_file_torrent)

@@ -16,6 +16,7 @@ defmodule Downloader do
   @doc """
   Instruct the server to fetch the peers
   """
+  # TODO: Do this automatically once the torrent has been parsed
   def fetch_peers(server) do
     GenServer.cast(server, :fetch_peers)
   end

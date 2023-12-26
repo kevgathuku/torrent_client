@@ -41,9 +41,10 @@ defmodule Client do
 
   # Server callbacks
   @impl true
-  def init(init_state) do
+  def init(state) do
+    # TODO: Check if this should be done in a continue block
     GenServer.cast(self(), :init_connection)
-    {:ok, init_state}
+    {:ok, state}
   end
 
   @impl true
