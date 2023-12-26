@@ -61,20 +61,27 @@ defmodule Downloader do
   """
   @impl true
   def init(torrent_filename) do
-    bento_torrent = parse_torrent_file(torrent_filename)
+    case parse_torrent_file(torrent_filename) do
+      {:ok, bento_torrent} ->
+        state =
+          %{}
+          |> Map.put(:peer_id, @peer_id)
+          |> Map.put(:port, @port)
+          |> Map.put(:filename, torrent_filename)
+          |> Map.put(:bento_torrent, bento_torrent)
 
-    state =
-      %{}
-      |> Map.put(:peer_id, @peer_id)
-      |> Map.put(:port, @port)
-      |> Map.put(:filename, torrent_filename)
-      |> Map.put(:bento_torrent, bento_torrent)
+        {:ok, state}
 
-    {:ok, state}
+      {:error, _} ->
+        {:stop, :shutdown}
+    end
   end
 
   @impl true
-  def handle_cast(:fetch_peers, %{bento_torrent: bento_torrent, peer_id: peer_id, port: port} = state) do
+  def handle_cast(
+        :fetch_peers,
+        %{bento_torrent: bento_torrent, peer_id: peer_id, port: port} = state
+      ) do
     case tracker_peers(bento_torrent, peer_id, port) do
       [] ->
         Logger.error("ERROR: No peers found")
@@ -141,10 +148,11 @@ defmodule Downloader do
     {:reply, state, state}
   end
 
-  # TODO: Add error handling. No need to proceed if torrent file is wrong
   def parse_torrent_file(filename) do
-    File.read!(filename)
-    |> Bento.torrent!()
+    with {:ok, file_contents} <- File.read(filename),
+         {:ok, parsed_torrent} <- Bento.torrent(file_contents) do
+      {:ok, parsed_torrent}
+    end
   end
 
   def tracker_peers(bento_torrent, peer_id, port) do
