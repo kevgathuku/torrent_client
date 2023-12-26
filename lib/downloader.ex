@@ -83,13 +83,16 @@ defmodule Downloader do
         :fetch_peers,
         %{bento_torrent: bento_torrent, peer_id: peer_id, port: port} = state
       ) do
-    case tracker_peers(bento_torrent, peer_id, port) do
+    case fetch_peers(bento_torrent, peer_id, port) do
       [] ->
         Logger.error("ERROR: No peers found")
+        # TODO: Do extra action here. Exit the program??
         {:noreply, Map.put(state, :peers, [])}
 
       peers ->
         Logger.info("Found Peers: #{Enum.count(peers)}")
+        # TODO: Do something with the found peers.
+        # Look into starting the connection with each of them here
         {:noreply, Map.put(state, :peers, peers)}
     end
   end
@@ -102,8 +105,10 @@ defmodule Downloader do
     peers_with_pids =
       peers
       |> Enum.map(fn peer ->
+        # TODO: Does the Client need to be started with supervision???
         case Client.start_link(own_torrent, peer, peer_id) do
           {:ok, pid} ->
+            # TODO: Maybe these are the only peers that should be added to the state?
             %{peer | pid: pid}
 
           :ignore ->
@@ -156,7 +161,7 @@ defmodule Downloader do
     end
   end
 
-  def tracker_peers(bento_torrent, peer_id, port) do
+  def fetch_peers(bento_torrent, peer_id, port) do
     case Tracker.get_peers(bento_torrent, peer_id, port) do
       {:ok, peers} ->
         Logger.info("Found Peers: #{Enum.count(peers)}")

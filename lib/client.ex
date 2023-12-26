@@ -7,9 +7,6 @@ defmodule Client do
   require Logger
   use GenServer
 
-  # Timeout in milliseconds for connecting to a peer
-  @timeout 3000
-
   def start_link(torrent, peer, peer_id) do
     state = %{
       peer: peer,
@@ -52,7 +49,7 @@ defmodule Client do
         :init_connection,
         %{peer: peer} = state
       ) do
-    case connect(peer) do
+    case Peer.connect(peer) do
       {:ok, socket} ->
         IO.puts("Peer: " <> peer.ip <> " is connected")
 
@@ -85,26 +82,6 @@ defmodule Client do
     # _from is the client calling this function
     # should return a tuple: {:reply, response, state}
     {:reply, state, state}
-  end
-
-  @doc """
-  Instruct the server to create a connection to the specified peer
-  """
-  def connect(peer) do
-    # Socket.TCP.connect(peer.ip, peer.port, timeout: @timeout)
-    case :gen_tcp.connect(peer.ip_tuple, peer.port, [:binary, active: false], @timeout) do
-      {:ok, socket} ->
-        {:ok, socket}
-
-      {:error, :econnrefused} ->
-        {:error, "Connection refused"}
-
-      {:error, :etimedout} ->
-        {:error, "Connection timed out"}
-
-      {:error, _} ->
-        {:error, "Failed to connect to peer"}
-    end
   end
 
   def send_handshake(socket, info_hash, peer_id) do
