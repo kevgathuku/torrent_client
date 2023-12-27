@@ -29,13 +29,6 @@ defmodule Client do
     GenServer.cast(server, :complete_handshake)
   end
 
-  @doc """
-  Instruct the server to report the current GenServer state
-  """
-  def report(server) do
-    GenServer.call(server, :report)
-  end
-
   # Server callbacks
   @impl true
   def init(state) do
@@ -75,13 +68,6 @@ defmodule Client do
     verify_checksum(response.info_hash, info_hash)
 
     {:noreply, state}
-  end
-
-  @impl true
-  def handle_call(:report, _from, state) do
-    # _from is the client calling this function
-    # should return a tuple: {:reply, response, state}
-    {:reply, state, state}
   end
 
   def send_handshake(socket, info_hash, peer_id) do

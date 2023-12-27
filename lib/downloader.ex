@@ -43,13 +43,6 @@ defmodule Downloader do
   end
 
   @doc """
-  Instruct the server to report the current GenServer state
-  """
-  def report(server) do
-    GenServer.call(server, :report)
-  end
-
-  @doc """
   Stop the server
   """
   def stop(server) do
@@ -147,13 +140,6 @@ defmodule Downloader do
   @impl true
   def handle_cast(:stop, state), do: {:stop, :normal, state}
 
-  @impl true
-  def handle_call(:report, _from, state) do
-    # _from is the client calling this function
-    # should return a tuple: {:reply, response, state}
-    {:reply, state, state}
-  end
-
   def parse_torrent_file(filename) do
     with {:ok, file_contents} <- File.read(filename),
          {:ok, parsed_torrent} <- Bento.torrent(file_contents) do
@@ -184,7 +170,7 @@ defmodule Downloader do
 
     # TODO: Call this after some time
     # OR have GenServer tell us when the filtering is complete
-    state = report(pid)
+    state = :sys.get_state(pid)
     connected_peers = Enum.count(state.peers)
     Logger.debug("Connected peers: #{connected_peers}")
   end

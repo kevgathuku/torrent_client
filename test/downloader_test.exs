@@ -35,14 +35,14 @@ defmodule DownloaderTest do
 
   @tag torrent_file_path: Utils.single_file_torrent()
   test "process starts when provided a valid single file torrent path", %{server: server} do
-    state = Downloader.report(server)
+    state = :sys.get_state(server)
 
     assert state.bento_torrent.__struct__ == Bento.Metainfo.Torrent
   end
 
   @tag torrent_file_path: Utils.multi_file_torrent()
   test "process starts when provided a valid multi file torrent path", %{server: server} do
-    state = Downloader.report(server)
+    state = :sys.get_state(server)
 
     assert state.bento_torrent.__struct__ == Bento.Metainfo.Torrent
   end
