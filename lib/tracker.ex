@@ -1,8 +1,7 @@
 defmodule Tracker do
   @doc """
-  Request the peers from the tracker using the custom torrent file
+  Request the peers from the tracker
   """
-  # TODO: Move to Downloader
   def get_peers(bento_torrent, peer_id, port) do
     case Tesla.get(tracker_url(bento_torrent, peer_id, port)) do
       {:ok, response} ->
