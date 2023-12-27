@@ -68,7 +68,9 @@ defmodule Downloader do
         :fetch_peers,
         %{bento_torrent: bento_torrent, peer_id: peer_id, port: port} = state
       ) do
-    case Tracker.get_peers(bento_torrent, peer_id, port) do
+    tracker_url = Tracker.tracker_url(bento_torrent, peer_id, port)
+
+    case Tracker.get_peers(tracker_url) do
       {:ok, peers} ->
         Logger.info("Found Peers: #{Enum.count(peers)}")
         {:noreply, Map.put(state, :peers, peers)}
@@ -133,18 +135,6 @@ defmodule Downloader do
     with {:ok, file_contents} <- File.read(filename),
          {:ok, parsed_torrent} <- Bento.torrent(file_contents) do
       {:ok, parsed_torrent}
-    end
-  end
-
-  def fetch_peers(bento_torrent, peer_id, port) do
-    case Tracker.get_peers(bento_torrent, peer_id, port) do
-      {:ok, peers} ->
-        Logger.info("Found Peers: #{Enum.count(peers)}")
-        peers
-
-      {:error, reason} ->
-        Logger.error("Get Peers Error: #{reason}")
-        []
     end
   end
 

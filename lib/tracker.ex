@@ -1,21 +1,7 @@
 defmodule Tracker do
   @doc """
-  Request the peers from the tracker
-  """
-  def get_peers(bento_torrent, peer_id, port) do
-    case Tesla.get(tracker_url(bento_torrent, peer_id, port)) do
-      {:ok, response} ->
-        parse_peer_response(response)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @doc """
   Returns the Tracker URL with correctly encoded params
   """
-  # TODO: The only thing that belongs here. Maybe move to Utils??
   def tracker_url(bento_torrent, peer_id, port) do
     info_hash = Torrent.info_hash(bento_torrent) |> Base.decode16!()
 
@@ -34,6 +20,19 @@ defmodule Tracker do
       |> URI.encode_query()
 
     "#{bento_torrent.announce}?#{params}"
+  end
+
+  @doc """
+  Request the peers from the tracker
+  """
+  def get_peers(tracker_url) do
+    case Tesla.get(tracker_url) do
+      {:ok, response} ->
+        parse_peer_response(response)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp parse_peer_response(response) do
@@ -55,7 +54,7 @@ defmodule Tracker do
     num_peers = floor(byte_size(data) / peer_size)
 
     # Extract peers from the binary data into a list of peers
-    # TODO: Too imperative. This can be made more functional / declarative
+    # TODO: Can be made more declarative
     Enum.reduce(0..(num_peers - 1), [], fn index, acc ->
       List.insert_at(acc, index, binary_part(data, index * peer_size, peer_size))
     end)
