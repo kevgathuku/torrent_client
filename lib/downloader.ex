@@ -56,7 +56,8 @@ defmodule Downloader do
           |> Map.put(:filename, torrent_filename)
           |> Map.put(:bento_torrent, bento_torrent)
 
-        {:ok, state, {:continue, :fetch_peers}}
+        # {:ok, state, {:continue, :fetch_peers}}
+        {:ok, state}
 
       {:error, _} ->
         {:stop, :shutdown}
