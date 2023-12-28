@@ -2,7 +2,7 @@ defmodule Peer do
   @moduledoc """
   A struct representing a peer.
   """
-  defstruct [:ip, :port, :ip_tuple, :pid]
+  defstruct [:ip, :port, :ip_tuple]
   require Logger
 
   # Timeout in milliseconds for initiating a peer connection
