@@ -48,16 +48,21 @@ defmodule Tracker do
     end
   end
 
-  @spec extract_peers(binary) :: list
   defp extract_peers(data) when is_binary(data) do
-    peer_size = 6
-    num_peers = floor(byte_size(data) / peer_size)
+    chunk_size = 6
+    # TODO: Add guard to ensure invalid length data is handled correctly
+    # num_peers = floor(byte_size(data) / chunk_size)
 
-    # Extract peers from the binary data into a list of peers
-    # TODO: Can be made more declarative -> chunk_every??
-    Enum.reduce(0..(num_peers - 1), [], fn index, acc ->
-      List.insert_at(acc, index, binary_part(data, index * peer_size, peer_size))
-    end)
-    |> Enum.map(&Peer.build_peer/1)
+    chunk_binary(data, chunk_size, [])
+  end
+
+  def chunk_binary(<<>>, _chunk_size, acc) do
+    Enum.map(acc, &Peer.build_peer/1)
+  end
+
+  def chunk_binary(binary, chunk_size, acc) do
+    <<ip::binary-size(chunk_size), rest::binary>> = binary
+
+    chunk_binary(rest, chunk_size, [ip | acc])
   end
 end
