@@ -4,15 +4,26 @@ defmodule TrackerTest do
   @port 6881
   @peer_id Utils.generate_peer_id()
 
+  @port_range 1..65535
+  @ip_pool for n <- 1..254, do: <<192, 168, 1, n>>
+
+  def generate_num_peers(num, ips, ports) do
+    valid_addresses =
+      for ip <- Enum.take_random(ips, num), do: ip <> <<Enum.random(ports)::size(16)>>
+
+    Enum.reduce(valid_addresses, fn address, acc -> <<acc::binary, address::binary>> end)
+  end
+
   setup do
-    # TODO: Return correctly encoded tracker response
     Tesla.Mock.mock(fn
       %{method: :get} ->
         %Tesla.Env{
           status: 200,
-          body: %{
-            response: "other"
-          }
+          body:
+            Bento.encode!(%{
+              "interval" => 900,
+              "peers" => generate_num_peers(5, @ip_pool, @port_range)
+            })
         }
     end)
 
@@ -29,7 +40,7 @@ defmodule TrackerTest do
         %{bento_torrent: bento_torrent, tracker_url: tracker_url}
 
       _ ->
-        # We can simply return :ok when we don't want to add any extra metadata
+        # Return :ok when we don't want to add any extra metadata
         :ok
     end
   end
@@ -47,8 +58,10 @@ defmodule TrackerTest do
 
   @tag torrent_file: Utils.multi_file_torrent()
   test "parses tracker response correctly", %{tracker_url: tracker_url} do
-    assert {:ok, env} = Tracker.get_peers(tracker_url)
-    assert env.status == 200
-    assert env.body == "hello"
+    # peers is the parsed list of peers
+    assert {:ok, %{peers: peers}} = Tracker.get_peers(tracker_url)
+
+    assert length(peers) == 5
+    assert Enum.all?(peers, fn peer -> peer.__struct__ == Peer end) == true
   end
 end

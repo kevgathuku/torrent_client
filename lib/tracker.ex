@@ -27,21 +27,21 @@ defmodule Tracker do
   """
   def get_peers(tracker_url) do
     case Tesla.get(tracker_url) do
-      {:ok, response} ->
-        parse_peer_response(response)
+      {:ok, %{body: body}} ->
+        parse_peer_response(body)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp parse_peer_response(response) do
-    case Bento.decode!(response.body) do
+  def parse_peer_response(body) do
+    case Bento.decode!(body) do
       %{"failure reason" => reason} ->
         {:error, reason}
 
       %{"peers" => peers} ->
-        {:ok, extract_peers(peers)}
+        {:ok, %{peers: extract_peers(peers)}}
 
       _ ->
         {:error, "Unknown response from tracker"}
@@ -54,7 +54,7 @@ defmodule Tracker do
     num_peers = floor(byte_size(data) / peer_size)
 
     # Extract peers from the binary data into a list of peers
-    # TODO: Can be made more declarative
+    # TODO: Can be made more declarative -> chunk_every??
     Enum.reduce(0..(num_peers - 1), [], fn index, acc ->
       List.insert_at(acc, index, binary_part(data, index * peer_size, peer_size))
     end)
