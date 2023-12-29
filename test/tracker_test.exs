@@ -1,18 +1,8 @@
 defmodule TrackerTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   @port 6881
   @peer_id Utils.generate_peer_id()
-
-  @port_range 1..65535
-  @ip_pool for n <- 1..254, do: <<192, 168, 1, n>>
-
-  def generate_num_peers(num, ips, ports) do
-    valid_addresses =
-      for ip <- Enum.take_random(ips, num), do: ip <> <<Enum.random(ports)::size(16)>>
-
-    Enum.reduce(valid_addresses, fn address, acc -> <<acc::binary, address::binary>> end)
-  end
 
   setup do
     Tesla.Mock.mock(fn
@@ -22,7 +12,7 @@ defmodule TrackerTest do
           body:
             Bento.encode!(%{
               "interval" => 900,
-              "peers" => generate_num_peers(5, @ip_pool, @port_range)
+              "peers" => Utils.generate_n_peers(5)
             })
         }
     end)
