@@ -1,9 +1,9 @@
 defmodule Tracker do
+  @peer_chunk_size 6
+
   @doc """
   Returns the Tracker URL with correctly encoded params
   """
-  @peer_chunk_size 6
-
   def tracker_url(bento_torrent, peer_id, port) do
     info_hash = Torrent.info_hash(bento_torrent) |> Base.decode16!()
 
@@ -28,7 +28,7 @@ defmodule Tracker do
   Request the peers from the tracker
   """
   def get_peers(tracker_url) do
-    case Tesla.get(tracker_url) do
+    case TorrentClient.Requests.get(tracker_url) do
       {:ok, %{body: body}} ->
         parse_peer_response(body)
 

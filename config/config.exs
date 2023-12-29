@@ -1,5 +1,5 @@
 import Config
 
-config :tesla, adapter: Tesla.Adapter.Hackney
+config :torrent_client, :requests_impl, TorrentClient.Requests.RequestsTeslaImpl
 
-import_config "#{config_env()}.exs"
+# import_config "#{config_env()}.exs"

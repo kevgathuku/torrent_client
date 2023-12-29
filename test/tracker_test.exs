@@ -1,24 +1,10 @@
 defmodule TrackerTest do
   use ExUnit.Case, async: true
 
+  import Mox
+
   @port 6881
   @peer_id Utils.generate_peer_id()
-
-  setup do
-    Tesla.Mock.mock(fn
-      %{method: :get} ->
-        %Tesla.Env{
-          status: 200,
-          body:
-            Bento.encode!(%{
-              "interval" => 900,
-              "peers" => Utils.generate_n_peers(5)
-            })
-        }
-    end)
-
-    :ok
-  end
 
   setup context do
     case context do
@@ -36,7 +22,7 @@ defmodule TrackerTest do
   end
 
   test "returns mock client when in test env" do
-    assert Application.get_env(:tesla, :adapter) == Tesla.Mock
+    assert Application.get_env(:torrent_client, :requests_impl) == TorrentClient.Requests.Mock
   end
 
   @tag torrent_file: Utils.multi_file_torrent()
@@ -47,8 +33,21 @@ defmodule TrackerTest do
   end
 
   @tag torrent_file: Utils.multi_file_torrent()
-  test "parses tracker response correctly", %{tracker_url: tracker_url} do
-    # peers is the parsed list of peers
+  test "parses valid tracker response correctly", %{tracker_url: tracker_url} do
+    TorrentClient.Requests.Mock
+    |> expect(:get, fn _url ->
+      {:ok,
+       %Tesla.Env{
+         status: 200,
+         body:
+           Bento.encode!(%{
+             "interval" => 900,
+             "peers" => Utils.generate_n_peers(5)
+           })
+       }}
+    end)
+
+    # Returns parsed list of peers
     assert {:ok, %{peers: peers}} = Tracker.get_peers(tracker_url)
 
     assert length(peers) == 5
