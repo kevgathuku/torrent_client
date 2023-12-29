@@ -28,7 +28,9 @@ defmodule TorrentClient.MixProject do
       {:socket, "~> 0.3"},
       # optional, but recommended adapter
       {:hackney, "~> 1.17"},
-      {:mox, "~> 1.1"}
+      {:mox, "~> 1.1"},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.3", only: [:dev], runtime: false},
     ]
   end
 end
