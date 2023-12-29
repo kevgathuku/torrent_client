@@ -2,7 +2,7 @@ defmodule Peer do
   @moduledoc """
   A struct representing a peer.
   """
-  defstruct [:ip, :port, :ip_tuple]
+  defstruct [:port, :ip_tuple]
   require Logger
 
   # Timeout in milliseconds for initiating a peer connection
@@ -11,15 +11,15 @@ defmodule Peer do
   @doc """
   Parses a peer's binary data into a Peer struct
   """
-  def build_peer(data) do
+  def build_peer(data) when is_binary(data) do
     <<ip0::8-unsigned-big-integer, ip1::8-unsigned-big-integer, ip2::8-unsigned-big-integer,
       ip3::8-unsigned-big-integer, port::16-integer-big-unsigned>> = data
 
-    ip = "#{ip0}.#{ip1}.#{ip2}.#{ip3}"
+    ip_tuple = {ip0, ip1, ip2, ip3}
 
-    Logger.info("Parsed peer IP: #{ip} Port: #{port}")
+    Logger.info("Parsed peer IP: #{inspect(ip_tuple)} Port: #{port}")
 
-    %Peer{ip: ip, ip_tuple: {ip0, ip1, ip2, ip3}, port: port}
+    %Peer{ip_tuple: ip_tuple, port: port}
   end
 
   @doc """
