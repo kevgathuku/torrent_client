@@ -6,6 +6,9 @@ defmodule TrackerTest do
   @port 6881
   @peer_id Utils.generate_peer_id()
 
+  # Make sure mocks are verified when the test exits
+  setup :verify_on_exit!
+
   setup context do
     case context do
       # If torrent_file_path is available in the context
@@ -22,7 +25,8 @@ defmodule TrackerTest do
   end
 
   test "returns mock client when in test env" do
-    assert Application.get_env(:torrent_client, :requests_impl) == TorrentClient.Requests.Mock
+    assert Application.get_env(:torrent_client, :requests_impl) ==
+             TorrentClient.Requests.RequestsMock
   end
 
   @tag torrent_file: Utils.multi_file_torrent()
@@ -34,19 +38,6 @@ defmodule TrackerTest do
 
   @tag torrent_file: Utils.multi_file_torrent()
   test "parses valid tracker response correctly", %{tracker_url: tracker_url} do
-    TorrentClient.Requests.Mock
-    |> expect(:get, fn _url ->
-      {:ok,
-       %Tesla.Env{
-         status: 200,
-         body:
-           Bento.encode!(%{
-             "interval" => 900,
-             "peers" => Utils.generate_n_peers(5)
-           })
-       }}
-    end)
-
     # Returns parsed list of peers
     assert {:ok, %{peers: peers}} = Tracker.get_peers(tracker_url)
 

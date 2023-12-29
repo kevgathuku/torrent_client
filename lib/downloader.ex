@@ -22,26 +22,25 @@ defmodule Downloader do
     GenServer.cast(server, :stop)
   end
 
-  @doc """
-  Instruct the server to connect to the peers
-  """
+  # @doc """
+  # Instruct the server to connect to the peers
+  # """
 
   # def start_peer_clients(server) do
   #   GenServer.cast(server, :start_peer_clients)
   # end
 
-  @doc """
-  Instruct the server to complete a handshake with peers
-  """
+  # @doc """
+  # Instruct the server to complete a handshake with peers
+  # """
 
   # def handshake_peer_clients(server) do
   #   GenServer.cast(server, {:filter_peers, :handshake})
   # end
 
-  @doc """
-  Instruct the server to only keep processes that are still alive
-  """
-
+  # @doc """
+  # Instruct the server to only keep processes that are still alive
+  # """
   # def filter_alive_peers(server) do
   #   GenServer.cast(server, {:filter_peers, :alive})
   # end
@@ -59,9 +58,9 @@ defmodule Downloader do
           |> Map.put(:filename, torrent_filename)
           |> Map.put(:bento_torrent, bento_torrent)
 
-      # {:ok, state, {:continue, :fetch_peers}}
+        {:ok, state, {:continue, :fetch_peers}}
 
-      {:ok, state}
+      # {:ok, state}
 
       {:error, _} ->
         {:stop, :shutdown}
@@ -76,7 +75,8 @@ defmodule Downloader do
     tracker_url = Tracker.tracker_url(bento_torrent, peer_id, port)
 
     case Tracker.get_peers(tracker_url) do
-      {:ok, peers} ->
+      # TODO: also match on the interval and store it
+      {:ok, %{peers: peers}} ->
         Logger.info("Found Peers: #{Enum.count(peers)}")
         {:noreply, Map.put(state, :peers, peers)}
 

@@ -1,6 +1,8 @@
 defmodule DownloaderTest do
   use ExUnit.Case, async: true
 
+  @default_peers 5
+
   setup context do
     case context do
       # If torrent_file_path is available in the context
@@ -52,5 +54,12 @@ defmodule DownloaderTest do
     pid = spawn_link(fn -> Downloader.start_link("wrong_path") end)
 
     assert_receive {:EXIT, ^pid, :shutdown}
+  end
+
+  @tag torrent_file_path: Utils.multi_file_torrent()
+  test "peers are fetched and added to state on init with a valid torrent path", %{server: server} do
+    state = :sys.get_state(server)
+
+    assert length(state.peers) == @default_peers
   end
 end
