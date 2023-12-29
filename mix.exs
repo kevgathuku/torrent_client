@@ -27,7 +27,8 @@ defmodule TorrentClient.MixProject do
       {:tesla, "~> 1.8"},
       {:socket, "~> 0.3"},
       # optional, but recommended adapter
-      {:hackney, "~> 1.17"}
+      {:hackney, "~> 1.17"},
+      {:mox, "~> 1.1"}
     ]
   end
 end
