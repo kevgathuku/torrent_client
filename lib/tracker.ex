@@ -2,6 +2,8 @@ defmodule Tracker do
   @doc """
   Returns the Tracker URL with correctly encoded params
   """
+  @peer_chunk_size 6
+
   def tracker_url(bento_torrent, peer_id, port) do
     info_hash = Torrent.info_hash(bento_torrent) |> Base.decode16!()
 
@@ -48,12 +50,8 @@ defmodule Tracker do
     end
   end
 
-  defp extract_peers(data) when is_binary(data) do
-    chunk_size = 6
-    # TODO: Add guard to ensure invalid length data is handled correctly
-    # num_peers = floor(byte_size(data) / chunk_size)
-
-    chunk_binary(data, chunk_size, [])
+  defp extract_peers(data) when is_binary(data) and rem(byte_size(data), @peer_chunk_size) == 0 do
+    chunk_binary(data, @peer_chunk_size, [])
   end
 
   def chunk_binary(<<>>, _chunk_size, acc) do
