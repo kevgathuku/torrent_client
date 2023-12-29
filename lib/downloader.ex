@@ -6,32 +6,13 @@ defmodule Downloader do
   require Logger
   use GenServer
 
-  @port 6882
-  @peer_id Utils.generate_peer_id()
+  @init_state %{
+    port: 6882,
+    peer_id: Utils.generate_peer_id()
+  }
 
   def start_link(torrent_filename) do
     GenServer.start_link(__MODULE__, torrent_filename, name: __MODULE__)
-  end
-
-  @doc """
-  Instruct the server to connect to the peers
-  """
-  def start_peer_clients(server) do
-    GenServer.cast(server, :start_peer_clients)
-  end
-
-  @doc """
-  Instruct the server to complete a handshake with peers
-  """
-  def handshake_peer_clients(server) do
-    GenServer.cast(server, {:filter_peers, :handshake})
-  end
-
-  @doc """
-  Instruct the server to only keep processes that are still alive
-  """
-  def filter_alive_peers(server) do
-    GenServer.cast(server, {:filter_peers, :alive})
   end
 
   @doc """
@@ -42,6 +23,30 @@ defmodule Downloader do
   end
 
   @doc """
+  Instruct the server to connect to the peers
+  """
+
+  # def start_peer_clients(server) do
+  #   GenServer.cast(server, :start_peer_clients)
+  # end
+
+  @doc """
+  Instruct the server to complete a handshake with peers
+  """
+
+  # def handshake_peer_clients(server) do
+  #   GenServer.cast(server, {:filter_peers, :handshake})
+  # end
+
+  @doc """
+  Instruct the server to only keep processes that are still alive
+  """
+
+  # def filter_alive_peers(server) do
+  #   GenServer.cast(server, {:filter_peers, :alive})
+  # end
+
+  @doc """
   Invoked when the server is started.
   start_link/3 will block until it returns.
   """
@@ -50,14 +55,13 @@ defmodule Downloader do
     case parse_torrent_file(torrent_filename) do
       {:ok, bento_torrent} ->
         state =
-          %{}
-          |> Map.put(:peer_id, @peer_id)
-          |> Map.put(:port, @port)
+          @init_state
           |> Map.put(:filename, torrent_filename)
           |> Map.put(:bento_torrent, bento_torrent)
 
-        # {:ok, state, {:continue, :fetch_peers}}
-        {:ok, state}
+      # {:ok, state, {:continue, :fetch_peers}}
+
+      {:ok, state}
 
       {:error, _} ->
         {:stop, :shutdown}
