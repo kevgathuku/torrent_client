@@ -6,40 +6,13 @@ defmodule Downloader do
   require Logger
   use GenServer
 
-  @port 6882
-  @peer_id Utils.generate_peer_id()
+  @init_state %{
+    port: 6882,
+    peer_id: Utils.generate_peer_id()
+  }
 
   def start_link(torrent_filename) do
     GenServer.start_link(__MODULE__, torrent_filename, name: __MODULE__)
-  end
-
-  @doc """
-  Instruct the server to fetch the peers
-  """
-  # TODO: Do this automatically once the torrent has been parsed
-  def fetch_peers(server) do
-    GenServer.cast(server, :fetch_peers)
-  end
-
-  @doc """
-  Instruct the server to connect to the peers
-  """
-  def start_peer_clients(server) do
-    GenServer.cast(server, :start_peer_clients)
-  end
-
-  @doc """
-  Instruct the server to complete a handshake with peers
-  """
-  def handshake_peer_clients(server) do
-    GenServer.cast(server, {:filter_peers, :handshake})
-  end
-
-  @doc """
-  Instruct the server to only keep processes that are still alive
-  """
-  def filter_alive_peers(server) do
-    GenServer.cast(server, {:filter_peers, :alive})
   end
 
   @doc """
@@ -48,6 +21,29 @@ defmodule Downloader do
   def stop(server) do
     GenServer.cast(server, :stop)
   end
+
+  # @doc """
+  # Instruct the server to connect to the peers
+  # """
+
+  # def start_peer_clients(server) do
+  #   GenServer.cast(server, :start_peer_clients)
+  # end
+
+  # @doc """
+  # Instruct the server to complete a handshake with peers
+  # """
+
+  # def handshake_peer_clients(server) do
+  #   GenServer.cast(server, {:filter_peers, :handshake})
+  # end
+
+  # @doc """
+  # Instruct the server to only keep processes that are still alive
+  # """
+  # def filter_alive_peers(server) do
+  #   GenServer.cast(server, {:filter_peers, :alive})
+  # end
 
   @doc """
   Invoked when the server is started.
@@ -58,13 +54,13 @@ defmodule Downloader do
     case parse_torrent_file(torrent_filename) do
       {:ok, bento_torrent} ->
         state =
-          %{}
-          |> Map.put(:peer_id, @peer_id)
-          |> Map.put(:port, @port)
+          @init_state
           |> Map.put(:filename, torrent_filename)
           |> Map.put(:bento_torrent, bento_torrent)
 
-        {:ok, state}
+        {:ok, state, {:continue, :fetch_peers}}
+
+      # {:ok, state}
 
       {:error, _} ->
         {:stop, :shutdown}
@@ -72,21 +68,21 @@ defmodule Downloader do
   end
 
   @impl true
-  def handle_cast(
+  def handle_continue(
         :fetch_peers,
         %{bento_torrent: bento_torrent, peer_id: peer_id, port: port} = state
       ) do
-    case fetch_peers(bento_torrent, peer_id, port) do
-      [] ->
-        Logger.error("ERROR: No peers found")
-        # TODO: Do extra action here. Exit the program??
-        {:noreply, Map.put(state, :peers, [])}
+    tracker_url = Tracker.tracker_url(bento_torrent, peer_id, port)
 
-      peers ->
+    case Tracker.get_peers(tracker_url) do
+      # TODO: also match on the interval and store it
+      {:ok, %{peers: peers}} ->
         Logger.info("Found Peers: #{Enum.count(peers)}")
-        # TODO: Do something with the found peers.
-        # Look into starting the connection with each of them here
         {:noreply, Map.put(state, :peers, peers)}
+
+      {:error, reason} ->
+        Logger.error("Get Peers Error: #{reason}")
+        {:noreply, Map.put(state, :peers, [])}
     end
   end
 
@@ -147,24 +143,12 @@ defmodule Downloader do
     end
   end
 
-  def fetch_peers(bento_torrent, peer_id, port) do
-    case Tracker.get_peers(bento_torrent, peer_id, port) do
-      {:ok, peers} ->
-        Logger.info("Found Peers: #{Enum.count(peers)}")
-        peers
-
-      {:error, reason} ->
-        Logger.error("Get Peers Error: #{reason}")
-        []
-    end
-  end
-
   def test_run() do
     torrent_filename = Utils.single_file_torrent()
     # Start the server
     {:ok, pid} = start_link(torrent_filename)
-    # Fetch peers
-    fetch_peers(pid)
+    # Fetch peers -> Should now be done automatically
+    # fetch_peers(pid)
 
     # filter_connected_peers(server)
 

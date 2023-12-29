@@ -1,22 +1,9 @@
 defmodule Tracker do
-  @doc """
-  Request the peers from the tracker using the custom torrent file
-  """
-  # TODO: Move to Downloader
-  def get_peers(bento_torrent, peer_id, port) do
-    case Tesla.get(tracker_url(bento_torrent, peer_id, port)) do
-      {:ok, response} ->
-        parse_peer_response(response)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
+  @peer_chunk_size 6
 
   @doc """
   Returns the Tracker URL with correctly encoded params
   """
-  # TODO: The only thing that belongs here. Maybe move to Utils??
   def tracker_url(bento_torrent, peer_id, port) do
     info_hash = Torrent.info_hash(bento_torrent) |> Base.decode16!()
 
@@ -37,29 +24,43 @@ defmodule Tracker do
     "#{bento_torrent.announce}?#{params}"
   end
 
-  defp parse_peer_response(response) do
-    case Bento.decode!(response.body) do
+  @doc """
+  Request the peers from the tracker
+  """
+  def get_peers(tracker_url) do
+    case TorrentClient.Requests.get(tracker_url) do
+      {:ok, %{body: body}} ->
+        parse_peer_response(body)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def parse_peer_response(body) do
+    case Bento.decode!(body) do
       %{"failure reason" => reason} ->
         {:error, reason}
 
       %{"peers" => peers} ->
-        {:ok, extract_peers(peers)}
+        {:ok, %{peers: extract_peers(peers)}}
 
       _ ->
         {:error, "Unknown response from tracker"}
     end
   end
 
-  @spec extract_peers(binary) :: list
-  defp extract_peers(data) when is_binary(data) do
-    peer_size = 6
-    num_peers = floor(byte_size(data) / peer_size)
+  defp extract_peers(data) when is_binary(data) and rem(byte_size(data), @peer_chunk_size) == 0 do
+    chunk_binary(data, @peer_chunk_size, [])
+  end
 
-    # Extract peers from the binary data into a list of peers
-    # TODO: Too imperative. This can be made more functional / declarative
-    Enum.reduce(0..(num_peers - 1), [], fn index, acc ->
-      List.insert_at(acc, index, binary_part(data, index * peer_size, peer_size))
-    end)
-    |> Enum.map(&Peer.build_peer/1)
+  def chunk_binary(<<>>, _chunk_size, acc) do
+    Enum.map(acc, &Peer.build_peer/1)
+  end
+
+  def chunk_binary(binary, chunk_size, acc) do
+    <<ip::binary-size(chunk_size), rest::binary>> = binary
+
+    chunk_binary(rest, chunk_size, [ip | acc])
   end
 end
