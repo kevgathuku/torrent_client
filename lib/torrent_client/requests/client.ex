@@ -1,4 +1,4 @@
-defmodule TorrentClient.Requests do
+defmodule TorrentClient.Requests.Client do
   def get(args) do
     impl().get(args)
   end

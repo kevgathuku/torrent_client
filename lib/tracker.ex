@@ -28,7 +28,7 @@ defmodule Tracker do
   Request the peers from the tracker
   """
   def get_peers(tracker_url) do
-    case TorrentClient.Requests.get(tracker_url) do
+    case TorrentClient.Requests.Client.get(tracker_url) do
       {:ok, %{body: body}} ->
         parse_peer_response(body)
 

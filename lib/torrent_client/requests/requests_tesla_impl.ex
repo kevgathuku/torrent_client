@@ -1,4 +1,4 @@
-defmodule TorrentClient.Requests.RequestsTeslaImpl do
+defmodule TorrentClient.Requests.TeslaClient do
   @behaviour TorrentClient.Requests.RequestsBehaviour
 
   @impl true
