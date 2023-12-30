@@ -42,25 +42,24 @@ defmodule Tracker do
       %{"failure reason" => reason} ->
         {:error, reason}
 
-      %{"peers" => peers} ->
-        {:ok, %{peers: extract_peers(peers)}}
+      %{"peers" => peers}
+      when is_binary(peers) and rem(byte_size(peers), @peer_chunk_size) == 0 ->
+        extracted_peers = extract_peers(peers, @peer_chunk_size, [])
+
+        {:ok, %{peers: extracted_peers}}
 
       _ ->
         {:error, "Unknown response from tracker"}
     end
   end
 
-  defp extract_peers(data) when is_binary(data) and rem(byte_size(data), @peer_chunk_size) == 0 do
-    chunk_binary(data, @peer_chunk_size, [])
-  end
-
-  def chunk_binary(<<>>, _chunk_size, acc) do
+  defp extract_peers(<<>>, _chunk_size, acc) do
     Enum.map(acc, &Peer.build_peer/1)
   end
 
-  def chunk_binary(binary, chunk_size, acc) do
+  defp extract_peers(binary, chunk_size, acc) do
     <<ip::binary-size(chunk_size), rest::binary>> = binary
 
-    chunk_binary(rest, chunk_size, [ip | acc])
+    extract_peers(rest, chunk_size, [ip | acc])
   end
 end
