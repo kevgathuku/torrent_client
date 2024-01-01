@@ -26,9 +26,9 @@ defmodule Downloader do
   # Instruct the server to connect to the peers
   # """
 
-  # def start_peer_clients(server) do
-  #   GenServer.cast(server, :start_peer_clients)
-  # end
+  def connect_peers(server) do
+    GenServer.cast(server, :connect_peers)
+  end
 
   # @doc """
   # Instruct the server to complete a handshake with peers
@@ -60,8 +60,6 @@ defmodule Downloader do
 
         {:ok, state, {:continue, :fetch_peers}}
 
-      # {:ok, state}
-
       {:error, _} ->
         {:stop, :shutdown}
     end
@@ -78,6 +76,7 @@ defmodule Downloader do
       # TODO: also match on the interval and store it
       {:ok, %{peers: peers}} ->
         Logger.info("Found Peers: #{Enum.count(peers)}")
+        # TODO: Start the peer connections here
         {:noreply, Map.put(state, :peers, peers)}
 
       {:error, reason} ->
@@ -88,16 +87,16 @@ defmodule Downloader do
 
   @impl true
   def handle_cast(
-        :start_peer_clients,
-        %{peers: peers, peer_id: peer_id, own_torrent: own_torrent} = state
+        :connect_peers,
+        %{peers: peers, peer_id: peer_id, bento_torrent: bento_torrent} = state
       ) do
     peers_with_pids =
       peers
       |> Enum.map(fn peer ->
-        # TODO: Does the Client need to be started with supervision???
-        case Client.start_link(own_torrent, peer, peer_id) do
+        case Client.start_link(self(), bento_torrent, peer, peer_id) do
           {:ok, pid} ->
             # TODO: Maybe these are the only peers that should be added to the state?
+            Logger.info("Connected Peer: #{peer.ip_tuple}")
             %{peer | pid: pid}
 
           :ignore ->
@@ -107,7 +106,9 @@ defmodule Downloader do
             peer
         end
       end)
-      |> Enum.reject(fn peer -> is_nil(peer.pid) end)
+
+    # Logger.info("peers_with_pids: #{peers_with_pids}")
+    # |> Enum.reject(fn peer -> is_nil(peer.pid) end)
 
     Logger.debug("Started client process for peers: #{Enum.count(peers_with_pids)}")
 
@@ -144,13 +145,10 @@ defmodule Downloader do
   end
 
   def test_run() do
-    torrent_filename = Utils.single_file_torrent()
     # Start the server
-    {:ok, pid} = start_link(torrent_filename)
-    # Fetch peers -> Should now be done automatically
-    # fetch_peers(pid)
+    {:ok, pid} = start_link(Utils.single_file_torrent())
 
-    # filter_connected_peers(server)
+    # connect_peers(server)
 
     # TODO: Call this after some time
     # OR have GenServer tell us when the filtering is complete

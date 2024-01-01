@@ -10,7 +10,7 @@ defmodule Utils do
   end
 
   def single_file_torrent do
-    "test/_data/debian-12.1.0-amd64-netinst.iso.torrent"
+    "test/_data/debian-12.4.0-amd64-netinst.iso.torrent"
   end
 
   def multi_file_torrent do

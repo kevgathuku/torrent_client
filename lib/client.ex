@@ -3,23 +3,20 @@ defmodule Client do
   Entry point for the Client.
   Connects to a peer
   """
+  # TODO: Merge this with Peer
 
   require Logger
   use GenServer
 
-  def start_link(torrent, peer, peer_id) do
+  def start_link(parent, torrent, peer, peer_id) do
     state = %{
       peer: peer,
       info_hash: torrent.info_hash,
-      peer_id: peer_id
+      peer_id: peer_id,
+      parent: parent
     }
 
     GenServer.start_link(__MODULE__, state, name: __MODULE__)
-  end
-
-  def init_connection(server) do
-    # TODO: Start from here. Debug this connection and ensure we can connect to the peer
-    GenServer.cast(server, :init_connection)
   end
 
   @doc """
@@ -32,13 +29,12 @@ defmodule Client do
   # Server callbacks
   @impl true
   def init(state) do
-    # TODO: Check if this should be done in a continue block
-    GenServer.cast(self(), :init_connection)
-    {:ok, state}
+    # {:ok, state}
+    {:ok, state, {:continue, :init_connection}}
   end
 
   @impl true
-  def handle_cast(
+  def handle_continue(
         :init_connection,
         %{peer: peer} = state
       ) do

@@ -1,6 +1,8 @@
 defmodule Tracker do
   @peer_chunk_size 6
 
+  require Logger
+
   @doc """
   Returns the Tracker URL with correctly encoded params
   """
@@ -29,10 +31,12 @@ defmodule Tracker do
   """
   def get_peers(tracker_url) do
     case TorrentClient.Requests.Client.get(tracker_url) do
-      {:ok, %{body: body}} ->
+      {:ok, %{body: body} = response} ->
+        Logger.debug("Got response from tracker: #{inspect(response)}")
         parse_peer_response(body)
 
       {:error, reason} ->
+        Logger.debug("Error getting peers from tracker: #{reason}")
         {:error, reason}
     end
   end
