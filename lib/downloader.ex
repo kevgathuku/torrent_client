@@ -6,11 +6,6 @@ defmodule Downloader do
   require Logger
   use GenServer
 
-  @init_state %{
-    port: 6882,
-    peer_id: Utils.generate_peer_id()
-  }
-
   def start_link(torrent_filename) do
     GenServer.start_link(__MODULE__, torrent_filename, name: __MODULE__)
   end
@@ -53,11 +48,17 @@ defmodule Downloader do
   def init(torrent_filename) do
     case parse_torrent_file(torrent_filename) do
       {:ok, bento_torrent} ->
+        port = 6882
+        peer_id = Utils.generate_peer_id()
+
         state =
-          @init_state
+          %{peer_id: peer_id, port: port}
           |> Map.put(:filename, torrent_filename)
           |> Map.put(:bento_torrent, bento_torrent)
+          |> Map.put(:info_hash, Torrent.info_hash(bento_torrent))
+          |> Map.put(:tracker_url, Tracker.tracker_url(bento_torrent, peer_id, port))
 
+        # {:ok, state}
         {:ok, state, {:continue, :fetch_peers}}
 
       {:error, _} ->
@@ -68,10 +69,8 @@ defmodule Downloader do
   @impl true
   def handle_continue(
         :fetch_peers,
-        %{bento_torrent: bento_torrent, peer_id: peer_id, port: port} = state
+        %{tracker_url: tracker_url} = state
       ) do
-    tracker_url = Tracker.tracker_url(bento_torrent, peer_id, port)
-
     case Tracker.get_peers(tracker_url) do
       # TODO: also match on the interval and store it
       {:ok, %{peers: peers}} ->
