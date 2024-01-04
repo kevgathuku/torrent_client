@@ -1,17 +1,24 @@
 defmodule Torrent do
   @hash_length 20
 
-  def get_piece_hashes(%{info: %{pieces: pieces}}) when byte_size(pieces) < 20,
-    do: {:error, "Received malformed pieces. Length: #{byte_size(pieces)}"}
-
   def get_piece_hashes(%{info: %{pieces: pieces}}) do
-    pieces_length = byte_size(pieces)
-
-    num_hashes = div(pieces_length, @hash_length)
-
-    for i <- 0..(num_hashes - 1), do: binary_part(pieces, i, 20)
+    case rem(byte_size(pieces), @hash_length) do
+      0 ->
+        extract_pieces(pieces, @hash_length, [])
+      _ ->
+        {:error, "Received malformed pieces. Length: #{byte_size(pieces)}"}
+    end
   end
 
+  defp extract_pieces(<<>>, _chunk_size, acc) do
+    acc
+  end
+
+  defp extract_pieces(binary, chunk_size, acc) do
+    <<piece::binary-size(chunk_size), rest::binary>> = binary
+
+    extract_pieces(rest, chunk_size, [piece | acc])
+  end
   @doc """
   Get the remaining length from a Bento torrent file
   Handles both single file torrents and multi-file torrents
