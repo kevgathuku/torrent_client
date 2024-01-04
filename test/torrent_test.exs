@@ -8,13 +8,15 @@ defmodule TorrentTest do
     {:ok, bento_torrent} = Downloader.parse_torrent_file(@single_file_torrent)
     info_hash = Torrent.info_hash(bento_torrent)
 
-    assert info_hash == "A9164E99D5181CFEF0C23C209334103619080908"
+    # debian-12.4.0-amd64-netinst.iso.torrent
+    assert info_hash == "8FFEAE56C32AB54D9992E4CBB20EF070637A9C72"
   end
 
   test "calculates the correct info hash for multi file torrent" do
     {:ok, bento_torrent} = Downloader.parse_torrent_file(@multi_file_torrent)
     info_hash = Torrent.info_hash(bento_torrent)
 
+    # big-buck-bunny.torrent
     assert info_hash == "DD8255ECDC7CA55FB0BBF81323D87062DB1F6D1C"
   end
 
