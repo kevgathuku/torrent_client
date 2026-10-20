@@ -100,6 +100,29 @@ defmodule TorrentTest do
       assert {:error, _} = Torrent.validate_path([])
       assert {:error, _} = Torrent.validate_path(["dir", ""])
     end
+
+    test "accepts every real path in the multi-file fixtures" do
+      multi =
+        for path <- Path.wildcard("test/_data/*.torrent"),
+            {:ok, bento} = Downloader.parse_torrent_file(path),
+            Map.has_key?(bento.info, :files) do
+          {path, bento.info.files}
+        end
+
+      assert multi != [], "expected at least one multi-file fixture"
+
+      for {path, files} <- multi, file <- files do
+        assert {:ok, _} = Torrent.validate_path(file.path), "rejects real path in #{path}"
+      end
+    end
+
+    test "rejects a real multi-file path with an injected escape" do
+      {:ok, bento} =
+        Downloader.parse_torrent_file("test/_data/big-buck-bunny.torrent")
+
+      [first | _] = bento.info.files
+      assert {:error, _} = Torrent.validate_path([".." | first.path])
+    end
   end
 
   describe "hostile mutations" do
