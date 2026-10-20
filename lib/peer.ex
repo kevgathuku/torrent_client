@@ -29,13 +29,16 @@ defmodule Peer do
     %Peer{ip_tuple: {a, b, c, d, e, f, g, h}, port: port}
   end
 
-  defp parse_list(<<>>, _size, _fun), do: {:ok, []}
+  defp parse_list(binary, size, fun), do: parse_list(binary, size, fun, [])
 
-  defp parse_list(binary, size, fun) when rem(byte_size(binary), size) == 0 do
-    {:ok, for(<<chunk::binary-size(size) <- binary>>, do: fun.(chunk))}
+  defp parse_list(<<>>, _size, _fun, acc), do: {:ok, :lists.reverse(acc)}
+
+  defp parse_list(binary, size, fun, acc) when byte_size(binary) >= size do
+    {chunk, rest} = :erlang.split_binary(binary, size)
+    parse_list(rest, size, fun, [fun.(chunk) | acc])
   end
 
-  defp parse_list(_binary, _size, _fun) do
+  defp parse_list(_binary, _size, _fun, _acc) do
     {:error, "malformed compact peers: truncated entry"}
   end
 
