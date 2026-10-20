@@ -36,4 +36,4 @@ Commit your work to the branch.
 
 After committing, record durable lessons with `bd remember` (what broke, what the fix was, what the next ticket should know) and refresh the repo context graph with `graft build`.
 
-Push the branch (`git push -u origin <branch>`) and open a PR against `main` (`gh pr create`). The PR body points at the issue tracker state; coverage residues and accepted gaps live at the test site, not in the PR body.
+Push the branch (`git push -u origin <branch>`) and open a PR against `main` (`gh pr create`), body per the `pr` skill.
