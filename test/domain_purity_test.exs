@@ -7,7 +7,20 @@ defmodule DomainPurityTest do
   use ExUnit.Case, async: true
 
   @domain_files ~w(lib/peer.ex lib/torrent.ex lib/handshake.ex lib/tracker.ex)
-  @banned [~r/\bGenServer\b/, ~r/:gen_tcp\b/, ~r/\bSocket\./, ~r/\bFile\./, ~r/\bTesla\b/, ~r/\bSystem\./, ~r/\bProcess\./, ~r/:timer\b/, ~r/\bDateTime\b/, ~r/\bIO\./, ~r/:ssl\b/, ~r/\bRequests\./]
+  @banned [
+    ~r/\bGenServer\b/,
+    ~r/:gen_tcp\b/,
+    ~r/\bSocket\./,
+    ~r/\bFile\./,
+    ~r/\bTesla\b/,
+    ~r/\bSystem\./,
+    ~r/\bProcess\./,
+    ~r/:timer\b/,
+    ~r/\bDateTime\b/,
+    ~r/\bIO\./,
+    ~r/:ssl\b/,
+    ~r/\bRequests\./
+  ]
 
   test "domain modules make no effectful calls" do
     violations =

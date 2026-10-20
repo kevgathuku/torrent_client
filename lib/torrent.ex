@@ -23,7 +23,8 @@ defmodule Torrent do
   Get the remaining length from a Bento torrent file
   Handles both single file torrents and multi-file torrents
   """
-  def remaining(bento_torrent) do    case bento_torrent.info do
+  def remaining(bento_torrent) do
+    case bento_torrent.info do
       %Bento.Metainfo.SingleFile{} ->
         bento_torrent.info.length
 

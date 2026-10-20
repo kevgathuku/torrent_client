@@ -23,6 +23,8 @@ An issue is done only when every gate below holds. Run the full suite once at th
 
 Once done, call the Skill tool with "code-review" to review the work.
 
+Before committing, run `mix format` on every file you touched and confirm `mix format --check-formatted` passes on them. Never commit unformatted code.
+
 Commit your work to the branch.
 
 After committing, record durable lessons with `bd remember` (what broke, what the fix was, what the next ticket should know) and refresh the repo context graph with `graft build`.

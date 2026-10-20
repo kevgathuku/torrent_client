@@ -2,7 +2,8 @@ defmodule Tracker do
   @doc """
   Returns the Tracker URL with correctly encoded params
   """
-  def tracker_url(bento_torrent, peer_id, port) do    info_hash = Torrent.info_hash(bento_torrent) |> Base.decode16!()
+  def tracker_url(bento_torrent, peer_id, port) do
+    info_hash = Torrent.info_hash(bento_torrent) |> Base.decode16!()
 
     params =
       %{

@@ -15,7 +15,11 @@ defmodule PeerTest do
     test "parses a list of IPv4 peers" do
       compact = <<192, 168, 1, 10, 0x1F, 0x90, 10, 0, 0, 1, 0x00, 0x50>>
 
-      assert {:ok, [%Peer{ip_tuple: {192, 168, 1, 10}, port: 8080}, %Peer{ip_tuple: {10, 0, 0, 1}, port: 80}]} =
+      assert {:ok,
+              [
+                %Peer{ip_tuple: {192, 168, 1, 10}, port: 8080},
+                %Peer{ip_tuple: {10, 0, 0, 1}, port: 80}
+              ]} =
                Peer.parse_compact(compact, :ipv4)
     end
 

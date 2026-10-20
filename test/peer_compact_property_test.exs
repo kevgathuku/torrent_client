@@ -8,18 +8,22 @@ defmodule PeerCompactPropertyTest do
   use ExUnitProperties
 
   defp ipv4_gen do
-    gen all a <- integer(0..255),
-            b <- integer(0..255),
-            c <- integer(0..255),
-            d <- integer(0..255),
-            port <- integer(1..65_535) do
+    gen all(
+          a <- integer(0..255),
+          b <- integer(0..255),
+          c <- integer(0..255),
+          d <- integer(0..255),
+          port <- integer(1..65_535)
+        ) do
       {{a, b, c, d}, port}
     end
   end
 
   defp ipv6_gen do
-    gen all segments <- list_of(integer(0..65_535), length: 8),
-            port <- integer(1..65_535) do
+    gen all(
+          segments <- list_of(integer(0..65_535), length: 8),
+          port <- integer(1..65_535)
+        ) do
       {List.to_tuple(segments), port}
     end
   end
@@ -32,7 +36,7 @@ defmodule PeerCompactPropertyTest do
   end
 
   property "IPv4 compact lists round-trip" do
-    check all peers <- list_of(ipv4_gen()) do
+    check all(peers <- list_of(ipv4_gen())) do
       compact = Enum.map_join(peers, &encode_ipv4(elem(&1, 0), elem(&1, 1)))
 
       expected =
@@ -43,7 +47,7 @@ defmodule PeerCompactPropertyTest do
   end
 
   property "IPv6 compact lists round-trip" do
-    check all peers <- list_of(ipv6_gen()) do
+    check all(peers <- list_of(ipv6_gen())) do
       compact = Enum.map_join(peers, &encode_ipv6(elem(&1, 0), elem(&1, 1)))
 
       expected =
@@ -54,8 +58,10 @@ defmodule PeerCompactPropertyTest do
   end
 
   property "misaligned binaries are errors" do
-    check all len <- member_of(Enum.reject(0..40, &(rem(&1, 6) == 0))),
-              bytes <- list_of(byte(), length: len) do
+    check all(
+            len <- member_of(Enum.reject(0..40, &(rem(&1, 6) == 0))),
+            bytes <- list_of(byte(), length: len)
+          ) do
       assert {:error, _} = Peer.parse_compact(:erlang.list_to_binary(bytes), :ipv4)
     end
   end

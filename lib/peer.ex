@@ -23,8 +23,8 @@ defmodule Peer do
   Parses a single 18-byte IPv6 compact peer into a Peer struct.
   """
   def build_peer6(
-        <<a::16-big, b::16-big, c::16-big, d::16-big, e::16-big, f::16-big, g::16-big,
-          h::16-big, port::16-big>>
+        <<a::16-big, b::16-big, c::16-big, d::16-big, e::16-big, f::16-big, g::16-big, h::16-big,
+          port::16-big>>
       ) do
     %Peer{ip_tuple: {a, b, c, d, e, f, g, h}, port: port}
   end
