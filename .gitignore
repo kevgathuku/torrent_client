@@ -175,3 +175,6 @@ dist
 .beads/proxieddb/
 *.gate.lock*
 .beads/issues.jsonl
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
