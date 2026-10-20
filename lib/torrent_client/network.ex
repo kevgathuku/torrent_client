@@ -4,12 +4,15 @@ defmodule TorrentClient.Network do
   in here stays out of the domain layer. (Behaviour + doubles land in kog.3.)
   """
 
+  @behaviour TorrentClient.NetworkBehaviour
+
   # Timeout in milliseconds for initiating a peer connection
   @timeout 3000
 
   @doc """
   Open a TCP connection to the peer. Returns the connected socket.
   """
+  @impl true
   def connect(peer) do
     case :gen_tcp.connect(peer.ip_tuple, peer.port, [:binary, active: false], @timeout) do
       {:ok, socket} ->

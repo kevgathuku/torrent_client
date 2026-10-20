@@ -6,6 +6,8 @@ defmodule Downloader do
   require Logger
   use GenServer
 
+  alias TorrentClient.Requests.Client, as: RequestsClient
+
   @init_state %{
     port: 6882,
     peer_id: Utils.generate_peer_id()
@@ -74,7 +76,7 @@ defmodule Downloader do
       ) do
     tracker_url = Tracker.tracker_url(bento_torrent, peer_id, port)
 
-    case TorrentClient.Requests.Client.get_peers(tracker_url) do
+    case RequestsClient.get_peers(tracker_url) do
       # TODO: also match on the interval and store it
       {:ok, %{peers: peers}} ->
         Logger.info("Found Peers: #{Enum.count(peers)}")

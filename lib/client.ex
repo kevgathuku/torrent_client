@@ -7,11 +7,12 @@ defmodule Client do
   require Logger
   use GenServer
 
-  def start_link(torrent, peer, peer_id) do
+  def start_link(torrent, peer, peer_id, opts \\ []) do
     state = %{
       peer: peer,
       info_hash: torrent.info_hash,
-      peer_id: peer_id
+      peer_id: peer_id,
+      network: Keyword.get(opts, :network, TorrentClient.Network)
     }
 
     GenServer.start_link(__MODULE__, state, name: __MODULE__)
@@ -40,9 +41,9 @@ defmodule Client do
   @impl true
   def handle_cast(
         :init_connection,
-        %{peer: peer} = state
+        %{peer: peer, network: network} = state
       ) do
-    case TorrentClient.Network.connect(peer) do
+    case network.connect(peer) do
       {:ok, socket} ->
         IO.puts("Peer: " <> peer.ip <> " is connected")
 

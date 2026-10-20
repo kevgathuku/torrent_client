@@ -1,0 +1,31 @@
+defmodule EffectBehavioursTest do
+  @moduledoc """
+  Structural contract: every effect has a behaviour, a real implementation
+  declaring it, and a Mox double. Behaviour conformance itself is enforced
+  by the compiler (`@behaviour`) and by Mox at `defmock` time.
+  """
+  use ExUnit.Case, async: true
+
+  test "network behaviour exposes connect/1" do
+    assert {:connect, 1} in TorrentClient.NetworkBehaviour.behaviour_info(:callbacks)
+
+    assert TorrentClient.Network.__info__(:attributes)[:behaviour] == [
+             TorrentClient.NetworkBehaviour
+           ]
+
+    assert TorrentClient.NetworkMock.__info__(:functions)[:connect] == 1
+  end
+
+  test "disk behaviour exposes read/1 and write/2" do
+    assert {:read, 1} in TorrentClient.DiskBehaviour.behaviour_info(:callbacks)
+    assert {:write, 2} in TorrentClient.DiskBehaviour.behaviour_info(:callbacks)
+    assert TorrentClient.Disk.__info__(:attributes)[:behaviour] == [TorrentClient.DiskBehaviour]
+    assert TorrentClient.DiskMock.__info__(:functions)[:read] == 1
+  end
+
+  test "clock behaviour exposes monotonic_ms/0" do
+    assert {:monotonic_ms, 0} in TorrentClient.ClockBehaviour.behaviour_info(:callbacks)
+    assert TorrentClient.Clock.__info__(:attributes)[:behaviour] == [TorrentClient.ClockBehaviour]
+    assert TorrentClient.ClockMock.__info__(:functions)[:monotonic_ms] == 0
+  end
+end
