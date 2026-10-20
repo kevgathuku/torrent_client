@@ -25,6 +25,41 @@ bd close <id>         # Complete work
 bd dolt push          # Push beads data to remote
 ```
 
+## Toolchain
+
+- Versions pinned in [.tool-versions](.tool-versions) (Elixir 1.20 / OTP 29);
+  CI ([.github/workflows](.github/workflows)) uses the same. Match them.
+- `mix deps.get` after pulling or changing `mix.exs`.
+
+## Quality Gates
+
+Run before handing off; leave the tree no worse than you found it
+(pre-existing compiler/format/credo warnings exist — fix any you introduce).
+
+```bash
+mix test                 # full suite
+mix test --cover         # suite with coverage report (HTML in cover/)
+mix format               # canonical style; `mix format --check-formatted` to verify
+mix credo --strict       # lint (no .credo.exs; strict default checks apply)
+mix dialyzer             # type analysis; first run builds the PLT and is slow
+```
+
+## Test Conventions
+
+- Real `.torrent` fixtures live in [test/_data](test/_data); prefer them over
+  hand-built binaries.
+- Effect doubles follow the Mox pattern in [test/test_helper.exs](test/test_helper.exs):
+  `Mox.defmock` + `Application.put_env` impl swap. Extend that pattern for new
+  effects; don't introduce another mocking style.
+
+## Elixir Conventions
+
+- `mix format` is the style authority (see [.formatter.exs](.formatter.exs):
+  `config`, `lib`, `test`). Never hand-format what the formatter owns.
+- Public modules and functions get `@moduledoc` / `@doc`.
+- Dependencies in [mix.exs](mix.exs): `credo` and `dialyxir` are dev/test-only;
+  keep runtime deps minimal — a new hex package needs justification.
+
 ## Non-Interactive Shell Commands
 
 **ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
