@@ -1,5 +1,7 @@
 # Agent Instructions
 
+Follow the principles in [CONSTITUTION.md](CONSTITUTION.md).
+
 This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
 
 > **Architecture in one line:** Issues live in a local Dolt database
