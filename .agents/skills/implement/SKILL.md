@@ -16,6 +16,7 @@ An issue is done only when every gate below holds. Run the full suite once at th
 
 - `mix test` passes.
 - `mix credo --strict` reports no issues in the changed files.
+- `mix dialyzer` passes (PLT is built; runs in seconds).
 - `mix test --cover` passes with total coverage at or above the 80% threshold enforced in `mix.exs` (`test_coverage: [summary: [threshold: 80]]`), and every new or changed line is covered.
 - Every new public function is covered in both directions: at least one test driving its success path and at least one driving each failure envelope it documents. A function whose tests only pass valid inputs has an unproven contract on exactly the paths callers branch on.
 - Partial branch lines need judgement, not reflex fixes. Fail-closed branches on hostile input (guards, validators, error envelopes) get mutation-based generative specs: generate a valid input, break one field per mutation, assert rejection, plus one positive invariant (valid input always accepted). Prefer these over envelope-only example tests.
