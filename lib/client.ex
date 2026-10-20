@@ -64,7 +64,7 @@ defmodule Client do
       |> receive_handshake
 
     IO.puts("Response from handshake with: #{peer.ip}")
-    IO.inspect(response)
+    Logger.debug("Handshake response: #{inspect(response)}")
 
     verify_checksum(response.info_hash, info_hash)
 
