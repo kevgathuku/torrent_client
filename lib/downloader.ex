@@ -142,20 +142,4 @@ defmodule Downloader do
       {:ok, parsed_torrent}
     end
   end
-
-  def test_run() do
-    torrent_filename = TestHelpers.single_file_torrent()
-    # Start the server
-    {:ok, pid} = start_link(torrent_filename)
-    # Fetch peers -> Should now be done automatically
-    # fetch_peers(pid)
-
-    # filter_connected_peers(server)
-
-    # TODO: Call this after some time
-    # OR have GenServer tell us when the filtering is complete
-    state = :sys.get_state(pid)
-    connected_peers = Enum.count(state.peers)
-    Logger.debug("Connected peers: #{connected_peers}")
-  end
 end
