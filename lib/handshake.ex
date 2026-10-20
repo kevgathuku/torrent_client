@@ -26,8 +26,8 @@ defmodule Handshake do
   """
   def deserialize(stream) when byte_size(stream) == 68 do
     <<protocol_length::integer, _protocol::binary-size(protocol_length),
-      _capabilities::binary-size(8), info_hash::binary-size(20),
-      peer_id::binary-size(20)>> = stream
+      _capabilities::binary-size(8), info_hash::binary-size(20), peer_id::binary-size(20)>> =
+      stream
 
     {:ok, %Handshake{info_hash: info_hash, peer_id: peer_id}}
   end
