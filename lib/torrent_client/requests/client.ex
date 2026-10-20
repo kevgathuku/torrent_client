@@ -1,4 +1,9 @@
 defmodule TorrentClient.Requests.Client do
+  @moduledoc """
+  HTTP edge for tracker requests. Dispatches to the configured impl;
+  pure response parsing lives in `Tracker`.
+  """
+
   def get(args) do
     impl().get(args)
   end
