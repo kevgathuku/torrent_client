@@ -9,14 +9,6 @@ defmodule Utils do
     :crypto.strong_rand_bytes(20) |> Base.encode64() |> binary_part(0, 20)
   end
 
-  def single_file_torrent do
-    "test/_data/debian-12.1.0-amd64-netinst.iso.torrent"
-  end
-
-  def multi_file_torrent do
-    "test/_data/big-buck-bunny.torrent"
-  end
-
   def get_port do
     # TODO: Improve to choose free port
     Enum.random(6881..6889)

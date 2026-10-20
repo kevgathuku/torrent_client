@@ -1,11 +1,8 @@
 defmodule Tracker do
-  @peer_chunk_size 6
-
   @doc """
   Returns the Tracker URL with correctly encoded params
   """
-  def tracker_url(bento_torrent, peer_id, port) do
-    info_hash = Torrent.info_hash(bento_torrent) |> Base.decode16!()
+  def tracker_url(bento_torrent, peer_id, port) do    info_hash = Torrent.info_hash(bento_torrent) |> Base.decode16!()
 
     params =
       %{
@@ -24,42 +21,31 @@ defmodule Tracker do
     "#{bento_torrent.announce}?#{params}"
   end
 
-  @doc """
-  Request the peers from the tracker
-  """
-  def get_peers(tracker_url) do
-    case TorrentClient.Requests.Client.get(tracker_url) do
-      {:ok, %{body: body}} ->
-        parse_peer_response(body)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
   def parse_peer_response(body) do
     case Bento.decode!(body) do
       %{"failure reason" => reason} ->
         {:error, reason}
 
-      %{"peers" => peers}
-      when is_binary(peers) and rem(byte_size(peers), @peer_chunk_size) == 0 ->
-        extracted_peers = extract_peers(peers, @peer_chunk_size, [])
-
-        {:ok, %{peers: extracted_peers}}
+      decoded when is_map(decoded) ->
+        if Map.has_key?(decoded, "peers") or Map.has_key?(decoded, "peers6") do
+          with {:ok, v4} <- parse_family(decoded, "peers", :ipv4),
+               {:ok, v6} <- parse_family(decoded, "peers6", :ipv6) do
+            {:ok, %{peers: v4 ++ v6}}
+          end
+        else
+          {:error, "Unknown response from tracker"}
+        end
 
       _ ->
         {:error, "Unknown response from tracker"}
     end
   end
 
-  defp extract_peers(<<>>, _chunk_size, acc) do
-    Enum.map(acc, &Peer.build_peer/1)
-  end
-
-  defp extract_peers(binary, chunk_size, acc) do
-    <<ip::binary-size(chunk_size), rest::binary>> = binary
-
-    extract_peers(rest, chunk_size, [ip | acc])
+  defp parse_family(decoded, key, family) do
+    case Map.get(decoded, key) do
+      nil -> {:ok, []}
+      peers when is_binary(peers) -> Peer.parse_compact(peers, family)
+      _ -> {:error, "Invalid #{key} in tracker response"}
+    end
   end
 end

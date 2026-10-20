@@ -13,11 +13,17 @@ defmodule Torrent do
   end
 
   @doc """
+  True when the data hashes to the expected 20-byte SHA1.
+  """
+  def verify_hash?(data, expected_hash) when is_binary(data) and is_binary(expected_hash) do
+    Utils.sha_sum(data) == expected_hash
+  end
+
+  @doc """
   Get the remaining length from a Bento torrent file
   Handles both single file torrents and multi-file torrents
   """
-  def remaining(bento_torrent) do
-    case bento_torrent.info do
+  def remaining(bento_torrent) do    case bento_torrent.info do
       %Bento.Metainfo.SingleFile{} ->
         bento_torrent.info.length
 

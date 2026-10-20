@@ -18,14 +18,14 @@ defmodule DownloaderTest do
   end
 
   test "parses single file torrent to a bento torrent" do
-    {:ok, bento_torrent} = Downloader.parse_torrent_file(Utils.single_file_torrent())
+    {:ok, bento_torrent} = Downloader.parse_torrent_file(TestHelpers.single_file_torrent())
 
     assert bento_torrent.__struct__ == Bento.Metainfo.Torrent
     assert bento_torrent.info.__struct__ == Bento.Metainfo.SingleFile
   end
 
   test "parses multi file torrent to a bento torrent" do
-    {:ok, bento_torrent} = Downloader.parse_torrent_file(Utils.multi_file_torrent())
+    {:ok, bento_torrent} = Downloader.parse_torrent_file(TestHelpers.multi_file_torrent())
 
     assert bento_torrent.__struct__ == Bento.Metainfo.Torrent
     assert bento_torrent.info.__struct__ == Bento.Metainfo.MultiFile
@@ -35,14 +35,14 @@ defmodule DownloaderTest do
     refute match?({:ok, _}, Downloader.parse_torrent_file("mypath"))
   end
 
-  @tag torrent_file_path: Utils.single_file_torrent()
+  @tag torrent_file_path: TestHelpers.single_file_torrent()
   test "process starts when provided a valid single file torrent path", %{server: server} do
     state = :sys.get_state(server)
 
     assert state.bento_torrent.__struct__ == Bento.Metainfo.Torrent
   end
 
-  @tag torrent_file_path: Utils.multi_file_torrent()
+  @tag torrent_file_path: TestHelpers.multi_file_torrent()
   test "process starts when provided a valid multi file torrent path", %{server: server} do
     state = :sys.get_state(server)
 
@@ -56,7 +56,7 @@ defmodule DownloaderTest do
     assert_receive {:EXIT, ^pid, :shutdown}
   end
 
-  @tag torrent_file_path: Utils.multi_file_torrent()
+  @tag torrent_file_path: TestHelpers.multi_file_torrent()
   test "peers are fetched and added to state on init with a valid torrent path", %{server: server} do
     state = :sys.get_state(server)
 

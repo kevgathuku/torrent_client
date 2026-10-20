@@ -1,8 +1,8 @@
 defmodule TorrentTest do
   use ExUnit.Case, async: true
 
-  @multi_file_torrent Utils.multi_file_torrent()
-  @single_file_torrent Utils.single_file_torrent()
+  @multi_file_torrent TestHelpers.multi_file_torrent()
+  @single_file_torrent TestHelpers.single_file_torrent()
 
   test "calculates the correct info hash for single file torrent" do
     {:ok, bento_torrent} = Downloader.parse_torrent_file(@single_file_torrent)
@@ -30,5 +30,12 @@ defmodule TorrentTest do
     piece_hashes = Torrent.get_piece_hashes(bento_torrent)
 
     assert Enum.all?(piece_hashes, fn x -> byte_size(x) == 20 end) == true
+  end
+
+  test "verifies data against its SHA1 hash" do
+    hash = Utils.sha_sum("piece bytes")
+
+    assert Torrent.verify_hash?("piece bytes", hash) == true
+    assert Torrent.verify_hash?("tampered bytes", hash) == false
   end
 end

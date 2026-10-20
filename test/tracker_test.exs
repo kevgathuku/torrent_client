@@ -29,17 +29,17 @@ defmodule TrackerTest do
              TorrentClient.Requests.RequestsMock
   end
 
-  @tag torrent_file: Utils.multi_file_torrent()
+  @tag torrent_file: TestHelpers.multi_file_torrent()
   test "builds valid tracker url", %{bento_torrent: bento_torrent, tracker_url: tracker_url} do
     assert String.contains?(tracker_url, bento_torrent.announce)
     assert String.contains?(tracker_url, URI.encode_query(%{peer_id: @peer_id}))
     assert String.contains?(tracker_url, to_string(@port))
   end
 
-  @tag torrent_file: Utils.multi_file_torrent()
+  @tag torrent_file: TestHelpers.multi_file_torrent()
   test "parses valid tracker response correctly", %{tracker_url: tracker_url} do
     # Returns parsed list of peers
-    assert {:ok, %{peers: peers}} = Tracker.get_peers(tracker_url)
+    assert {:ok, %{peers: peers}} = TorrentClient.Requests.Client.get_peers(tracker_url)
 
     assert length(peers) == 5
     assert Enum.all?(peers, fn peer -> peer.__struct__ == Peer end) == true

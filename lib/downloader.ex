@@ -74,7 +74,7 @@ defmodule Downloader do
       ) do
     tracker_url = Tracker.tracker_url(bento_torrent, peer_id, port)
 
-    case Tracker.get_peers(tracker_url) do
+    case TorrentClient.Requests.Client.get_peers(tracker_url) do
       # TODO: also match on the interval and store it
       {:ok, %{peers: peers}} ->
         Logger.info("Found Peers: #{Enum.count(peers)}")
@@ -144,7 +144,7 @@ defmodule Downloader do
   end
 
   def test_run() do
-    torrent_filename = Utils.single_file_torrent()
+    torrent_filename = TestHelpers.single_file_torrent()
     # Start the server
     {:ok, pid} = start_link(torrent_filename)
     # Fetch peers -> Should now be done automatically

@@ -42,7 +42,7 @@ defmodule Client do
         :init_connection,
         %{peer: peer} = state
       ) do
-    case Peer.connect(peer) do
+    case TorrentClient.Network.connect(peer) do
       {:ok, socket} ->
         IO.puts("Peer: " <> peer.ip <> " is connected")
 
