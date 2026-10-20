@@ -10,6 +10,12 @@ If the user passes a ticket reference, fetch it from the issue tracker and state
 
 Create a new branch for the issue before changing anything (`git checkout -b <type>/<ticket>-<slug>`). Never implement directly on `main`.
 
+Pre-checks before writing any code:
+
+- Map the touched code paths with `graft` (`graft ask`, `graft callers`, `graft skeleton`) — know every caller and seam before changing a shared function.
+- Pull the relevant decisions from beads memory — run `bd prime` for workflow context, then recall/search past notes, issue history, and ADRs. Prior tickets already settled naming, layering, and rejected alternatives.
+- If any behaviour maps to a BEP, read the spec first and verify wire shapes, limits, and vocabulary against it — never implement protocol behaviour from memory.
+
 Call the Skill tool with "tdd" where possible, at pre-agreed seams.
 
 An issue is done only when every gate below holds. Run the full suite once at the end, not after each slice.
@@ -30,4 +36,4 @@ Commit your work to the branch.
 
 After committing, record durable lessons with `bd remember` (what broke, what the fix was, what the next ticket should know) and refresh the repo context graph with `graft build`.
 
-Push the branch (`git push -u origin <branch>`) and open a PR against `main` (`gh pr create`). The PR body points at the issue tracker state; coverage residues and accepted gaps live at the test site, not in the PR body.
+Push the branch (`git push -u origin <branch>`) and open a PR against `main` (`gh pr create`), body per the `pr` skill.
