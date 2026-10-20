@@ -18,6 +18,10 @@ Implements <bead-id>.
 ## Verification
 
 TDD throughout (red before green per slice): `mix test` — <N> tests, <M> properties, 0 failures. <specific checks: e.g. no bare X remains in lib/, gate outputs>
+
+## Merge danger
+
+<one-way or two-way door, one line> — <blast radius in one phrase>. Omit this section for pure two-way doors with local blast radius.
 ```
 
 ## Rules
