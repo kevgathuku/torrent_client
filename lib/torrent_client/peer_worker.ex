@@ -10,23 +10,30 @@ defmodule TorrentClient.PeerWorker do
 
   Wire posture, per the ticket: assume choked until unchoked (requests go
   out only while unchoked), send `Interested` + `Unchoke` once the handshake
-  completes, then request the piece in 16 KiB blocks, verify the SHA1, and
-  persist via the disk seam. Interleaved `Have`/`Bitfield`/`Choke` update
-  the `PeerState`; anything malformed is an error stop, never a crash.
+  completes, then request the piece in 16 KiB blocks with up to five in
+  flight, verify the SHA1, and persist via the disk seam. Interleaved
+  `Have`/`Bitfield`/`Choke` update the `PeerState`; anything malformed is
+  an error stop, never a crash.
+
+  A per-piece deadline (default 30 s) unsticks dead peers: when it fires,
+  the worker publishes the missing blocks to `:report_to` (the coordinator
+  requeues from that) and stops abnormally so the supervisor restarts it
+  within its intensity. A choke drops in-flight requests; the next unchoke
+  re-requests them (duplicates are idempotent).
   """
 
   use GenServer
 
   require Logger
 
+  # Choke/NotInterested arrive too but need no name: the dispatch
+  # catch-all routes every posture message through PeerState.handle/2.
   alias PeerMessage.{
     Bitfield,
     Cancel,
-    Choke,
     Have,
     Interested,
     KeepAlive,
-    NotInterested,
     Piece,
     Request,
     Unchoke
@@ -35,6 +42,8 @@ defmodule TorrentClient.PeerWorker do
   @block_size 16_384
   @handshake_size 68
   @recv_timeout 10_000
+  @max_inflight 5
+  @piece_timeout 30_000
 
   @doc """
   Start an unnamed worker downloading `piece_index` from `peer`.
@@ -45,8 +54,12 @@ defmodule TorrentClient.PeerWorker do
   (default `TorrentClient.Network`), `:disk` (default
   `TorrentClient.Disk`), `:sock` (default
   `TorrentClient.GenTcpSocket`, implementing
-  `TorrentClient.SocketBehaviour`), `:recv_timeout` ms (default
-  #{@recv_timeout}).
+  `TorrentClient.SocketBehaviour`), `:clock` (default
+  `TorrentClient.Clock`), `:recv_timeout` ms (default
+  #{@recv_timeout}). Pipeline: `:max_inflight` outstanding block requests
+  (default #{@max_inflight}), `:piece_timeout` ms for the whole piece
+  (default #{@piece_timeout}), `:report_to` pid receiving
+  `{:piece_timeout, index, missing}` on give-up (default `nil`).
   """
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -71,12 +84,17 @@ defmodule TorrentClient.PeerWorker do
       network: Keyword.get(opts, :network, TorrentClient.Network),
       disk: Keyword.get(opts, :disk, TorrentClient.Disk),
       sock: Keyword.get(opts, :sock, TorrentClient.GenTcpSocket),
+      clock: Keyword.get(opts, :clock, TorrentClient.Clock),
       recv_timeout: Keyword.get(opts, :recv_timeout, @recv_timeout),
+      max_inflight: Keyword.get(opts, :max_inflight, @max_inflight),
+      piece_timeout: Keyword.get(opts, :piece_timeout, @piece_timeout),
+      report_to: Keyword.get(opts, :report_to, nil),
       socket: nil,
+      deadline_at: nil,
       peer_state: PeerState.init(),
       bitfield_seen: false,
       blocks: [],
-      pending: nil,
+      inflight: [],
       received: %{}
     }
 
@@ -96,8 +114,11 @@ defmodule TorrentClient.PeerWorker do
         state = %{state | socket: socket}
 
         case handshake(state) do
-          :ok -> serve(state)
-          {:error, reason} -> {:stop, reason, state}
+          :ok ->
+            serve(%{state | deadline_at: state.clock.monotonic_ms() + state.piece_timeout})
+
+          {:error, reason} ->
+            {:stop, reason, state}
         end
 
       {:error, reason} ->
@@ -151,20 +172,42 @@ defmodule TorrentClient.PeerWorker do
     tcp_send(sock, socket, bytes)
   end
 
-  # Loop: finish when every block is in, request only while unchoked, and
-  # stop normally when a seen bitfield proves the peer lacks our piece.
+  # Loop: finish when every block is in, give up at the deadline, stop
+  # normally when a seen bitfield proves the peer lacks our piece, else
+  # fill the pipeline and wait for answers.
   defp serve(state) do
     cond do
       complete?(state) -> verify_and_write(state)
+      deadline_exceeded?(state) -> give_up(state)
       known_missing?(state) -> {:stop, :normal, state}
-      sendable?(state) -> request_next(state)
-      true -> await_message(state)
+      true -> fill_pipeline(state)
     end
   end
 
+  defp deadline_exceeded?(state) do
+    state.clock.monotonic_ms() >= state.deadline_at
+  end
+
   defp known_missing?(state) do
-    state.bitfield_seen and state.pending == nil and next_block(state) != nil and
+    state.bitfield_seen and state.inflight == [] and next_block(state) != nil and
       state.piece_index not in PeerState.available_indices(state.peer_state)
+  end
+
+  # Give up with the missing set published: the report lets the coordinator
+  # requeue exactly these blocks, and the abnormal reason restarts the worker
+  # within the supervisor's intensity for transient blips.
+  defp give_up(state) do
+    missing =
+      for {begin, length} <- state.blocks, not Map.has_key?(state.received, begin) do
+        {begin, length}
+      end
+
+    case state.report_to do
+      nil -> :ok
+      pid -> send(pid, {:piece_timeout, state.piece_index, missing})
+    end
+
+    {:stop, {:piece_timeout, state.piece_index, missing}, state}
   end
 
   defp complete?(state) do
@@ -177,8 +220,8 @@ defmodule TorrentClient.PeerWorker do
   end
 
   defp sendable?(state) do
-    not state.peer_state.peer_choking and state.pending == nil and next_block(state) != nil and
-      peer_may_have?(state)
+    not state.peer_state.peer_choking and length(state.inflight) < state.max_inflight and
+      next_block(state) != nil and peer_may_have?(state)
   end
 
   defp peer_may_have?(state) do
@@ -187,25 +230,41 @@ defmodule TorrentClient.PeerWorker do
   end
 
   defp next_block(state) do
-    Enum.find(state.blocks, fn {begin, _length} -> not Map.has_key?(state.received, begin) end)
+    Enum.find(state.blocks, fn {begin, _length} ->
+      not Map.has_key?(state.received, begin) and List.keyfind(state.inflight, begin, 0) == nil
+    end)
   end
 
-  # Only called when sendable? holds, so a next block exists and the peer
-  # may have it; the stop stays in serve/known_missing? above.
-  defp request_next(state) do
-    {begin, length} = next_block(state)
-    request = %Request{index: state.piece_index, begin: begin, length: length}
+  # Send while the peer may have more for us and the pipeline has room,
+  # then wait for answers. A send failure stops fail-closed.
+  defp fill_pipeline(state) do
+    if sendable?(state) do
+      {begin, length} = next_block(state)
+      request = %Request{index: state.piece_index, begin: begin, length: length}
 
-    case send_message(state.sock, state.socket, request) do
-      :ok -> await_message(%{state | pending: {begin, length}})
-      {:error, reason} -> {:stop, reason, state}
+      case send_message(state.sock, state.socket, request) do
+        :ok -> fill_pipeline(%{state | inflight: [{begin, length} | state.inflight]})
+        {:error, reason} -> {:stop, reason, state}
+      end
+    else
+      await_message(state)
     end
   end
 
   defp await_message(state) do
     case recv_message(state) do
-      {:ok, message} -> dispatch(state, message)
-      {:error, reason} -> {:stop, reason, state}
+      {:ok, message} ->
+        dispatch(state, message)
+
+      {:error, :peer_timeout} ->
+        if deadline_exceeded?(state) do
+          give_up(state)
+        else
+          {:stop, :peer_timeout, state}
+        end
+
+      {:error, reason} ->
+        {:stop, reason, state}
     end
   end
 
@@ -224,10 +283,10 @@ defmodule TorrentClient.PeerWorker do
   defp handle_posture(state, message) do
     case PeerState.handle(state.peer_state, message) do
       {:ok, peer_state} ->
-        # A fresh unchoke re-arms the in-flight block: peers may drop
-        # requests on choke, and a duplicate block is idempotent.
-        pending = if match?(%Unchoke{}, message), do: nil, else: state.pending
-        serve(%{state | peer_state: peer_state, pending: pending})
+        # A fresh unchoke re-arms the pipeline: peers may drop requests on
+        # choke, and duplicate blocks are idempotent.
+        inflight = if match?(%Unchoke{}, message), do: [], else: state.inflight
+        serve(%{state | peer_state: peer_state, inflight: inflight})
 
       {:error, reason} ->
         {:stop, reason, state}
@@ -242,8 +301,7 @@ defmodule TorrentClient.PeerWorker do
          List.keyfind(state.blocks, begin, 0) == {begin, byte_size(block)} and
          Torrent.validate_block(state.info, index, begin, block) == :ok do
       state = %{state | received: Map.put(state.received, begin, block)}
-      pending = if state.pending == {begin, byte_size(block)}, do: nil, else: state.pending
-      serve(%{state | pending: pending})
+      serve(%{state | inflight: List.keydelete(state.inflight, begin, 0)})
     else
       {:stop, :unexpected_piece, state}
     end
@@ -276,8 +334,15 @@ defmodule TorrentClient.PeerWorker do
     end
   end
 
+  # Each receive is bounded by the nearer of the per-message timeout and
+  # the remaining piece deadline, so a silent peer trips the deadline
+  # instead of hanging on a full recv timeout.
+  defp recv_budget(state) do
+    min(state.recv_timeout, max(state.deadline_at - state.clock.monotonic_ms(), 0))
+  end
+
   defp recv_message(state) do
-    with {:ok, <<length::32-big>>} <- recv_exact(state.sock, state.socket, 4, state.recv_timeout) do
+    with {:ok, <<length::32-big>>} <- recv_exact(state.sock, state.socket, 4, recv_budget(state)) do
       if length == 0 do
         {:ok, %KeepAlive{}}
       else
@@ -289,7 +354,7 @@ defmodule TorrentClient.PeerWorker do
   # Exact framing: payload holds precisely one message, so the decoded
   # rest is always empty and any error is fail-closed.
   defp recv_payload(state, length) do
-    with {:ok, payload} <- recv_exact(state.sock, state.socket, length, state.recv_timeout),
+    with {:ok, payload} <- recv_exact(state.sock, state.socket, length, recv_budget(state)),
          {:ok, message, _rest} <- PeerMessage.decode(<<length::32-big, payload::binary>>) do
       {:ok, message}
     else

@@ -405,6 +405,181 @@ defmodule PeerWorkerTest do
     assert_receive {:EXIT, ^pid, :econnreset}, 1_000
   end
 
+  defp five_block(ctx) do
+    # One piece of five blocks (not five one-block pieces).
+    info = %{:"piece length" => 81_920, name: "five.bin", length: 81_920}
+    :ok = TorrentClient.Disk.init_layout(ctx.base, info)
+    data = :crypto.strong_rand_bytes(81_920)
+    {info, data, :crypto.hash(:sha, data)}
+  end
+
+  defp recv_requests(_sock, 0, acc), do: Enum.reverse(acc)
+
+  defp recv_requests(sock, n, acc) do
+    {:ok, %Request{index: 0, begin: begin, length: length}, <<>>} = recv_frame(sock)
+    true = length <= 16_384
+    recv_requests(sock, n - 1, [{begin, length} | acc])
+  end
+
+  test "pipelines up to 5 block requests per peer", ctx do
+    {info, data, hash} = five_block(ctx)
+    info_hash = :crypto.strong_rand_bytes(20)
+    parent = self()
+    {listen, port} = listen!()
+
+    spawn(fn ->
+      sock = listen |> accept_handshake(info_hash) |> greet(info_hash)
+      send_message(sock, %Unchoke{})
+      requests = recv_requests(sock, 5, [])
+      assert Enum.map(requests, &elem(&1, 0)) == [0, 16_384, 32_768, 49_152, 65_536]
+      # Serve out of order: assembly must not depend on arrival order.
+      for {begin, length} <- Enum.reverse(requests) do
+        send_message(sock, %Piece{index: 0, begin: begin, block: binary_part(data, begin, length)})
+      end
+
+      {:error, :closed} = :gen_tcp.recv(sock, 4, 5_000)
+      send(parent, :seed_done)
+    end)
+
+    Process.flag(:trap_exit, true)
+
+    opts =
+      worker_opts(ctx, info_hash, port,
+        info: info,
+        piece_hash: hash,
+        max_inflight: 5
+      )
+
+    {:ok, pid} = PeerWorker.start_link(opts)
+
+    assert_receive {:EXIT, ^pid, :normal}, 5_000
+    assert_receive :seed_done, 5_000
+    assert {:ok, data} == TorrentClient.Disk.read_piece(ctx.base, info, 0)
+  end
+
+  test "strict peer severs oversized requests and the download still completes", ctx do
+    info_hash = :crypto.strong_rand_bytes(20)
+    parent = self()
+    {listen, port} = listen!()
+
+    spawn(fn ->
+      sock = listen |> accept_handshake(info_hash) |> greet(info_hash)
+      send_message(sock, %Unchoke{})
+      {:ok, %Request{length: length} = request, <<>>} = recv_frame(sock)
+
+      if length > 16_384 do
+        :gen_tcp.close(sock)
+        send(parent, :severed)
+      else
+        %Request{begin: begin} = request
+
+        send_message(sock, %Piece{
+          index: 0,
+          begin: begin,
+          block: binary_part(ctx.data, begin, length)
+        })
+
+        send_message(sock, %Piece{
+          index: 0,
+          begin: 16_384,
+          block: binary_part(ctx.data, 16_384, 16_384)
+        })
+      end
+    end)
+
+    Process.flag(:trap_exit, true)
+    {:ok, pid} = PeerWorker.start_link(worker_opts(ctx, info_hash, port))
+
+    assert_receive {:EXIT, ^pid, :normal}, 5_000
+    refute_receive :severed, 500
+    assert {:ok, ctx.data} == TorrentClient.Disk.read_piece(ctx.base, ctx.info, 0)
+  end
+
+  test "dead peer hits the per-piece deadline and its blocks requeue", ctx do
+    info_hash = :crypto.strong_rand_bytes(20)
+    parent = self()
+    {listen, port} = listen!()
+
+    spawn(fn ->
+      sock = listen |> accept_handshake(info_hash) |> greet(info_hash)
+      send_message(sock, %Unchoke{})
+      send(parent, :fake_waiting)
+      # Silent from here: the worker's requests go unanswered.
+      Process.sleep(5_000)
+    end)
+
+    Process.flag(:trap_exit, true)
+
+    opts =
+      worker_opts(ctx, info_hash, port,
+        piece_timeout: 200,
+        report_to: parent
+      )
+
+    {:ok, pid} = PeerWorker.start_link(opts)
+    missing = [{0, 16_384}, {16_384, 16_384}]
+
+    assert_receive {:EXIT, ^pid, {:piece_timeout, 0, ^missing}}, 5_000
+    assert_receive {:piece_timeout, 0, ^missing}, 5_000
+
+    assert {:ok, :binary.copy(<<0>>, @piece_length)} ==
+             TorrentClient.Disk.read_piece(ctx.base, ctx.info, 0)
+  end
+
+  test "deadline give-up without a report target still stops with the missing set", ctx do
+    info_hash = :crypto.strong_rand_bytes(20)
+    {listen, port} = listen!()
+
+    spawn(fn ->
+      sock = listen |> accept_handshake(info_hash) |> greet(info_hash)
+      send_message(sock, %Unchoke{})
+      Process.sleep(5_000)
+    end)
+
+    Process.flag(:trap_exit, true)
+    {:ok, pid} = PeerWorker.start_link(worker_opts(ctx, info_hash, port, piece_timeout: 200))
+    missing = [{0, 16_384}, {16_384, 16_384}]
+
+    assert_receive {:EXIT, ^pid, {:piece_timeout, 0, ^missing}}, 5_000
+  end
+
+  test "choke drops in-flight blocks and unchoke re-requests them", ctx do
+    {info, data, hash} = five_block(ctx)
+    info_hash = :crypto.strong_rand_bytes(20)
+    parent = self()
+    {listen, port} = listen!()
+
+    spawn(fn ->
+      sock = listen |> accept_handshake(info_hash) |> greet(info_hash)
+      send_message(sock, %Unchoke{})
+      first = recv_requests(sock, 5, [])
+      send_message(sock, %Choke{})
+      send_message(sock, %Unchoke{})
+      second = recv_requests(sock, 5, [])
+      assert second == first
+      send(parent, {:resent, length(first) + length(second)})
+
+      for {begin, length} <- second do
+        send_message(sock, %Piece{index: 0, begin: begin, block: binary_part(data, begin, length)})
+      end
+    end)
+
+    Process.flag(:trap_exit, true)
+
+    opts =
+      worker_opts(ctx, info_hash, port,
+        info: info,
+        piece_hash: hash,
+        max_inflight: 5
+      )
+
+    {:ok, pid} = PeerWorker.start_link(opts)
+
+    assert_receive {:EXIT, ^pid, :normal}, 5_000
+    assert_receive {:resent, 10}, 5_000
+    assert {:ok, data} == TorrentClient.Disk.read_piece(ctx.base, info, 0)
+  end
+
   test "disk failure stops with the reason", ctx do
     info_hash = :crypto.strong_rand_bytes(20)
     {listen, port} = listen!()
