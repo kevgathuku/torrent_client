@@ -4,6 +4,11 @@ defmodule TorrentClient.Announcer do
   the injected transport, HTTP via the requests seam), failing over on
   error and re-announcing every interval. Supervised: crash restarts it,
   state rebuilds from the next cycle.
+
+  `announce_all/3` is the bounded whole-announce: every tracker queried
+  concurrently, peers merged as answers land, resolving within the timeout
+  even when trackers black-hole. Used for initial peer acquisition; the
+  supervised cycle keeps the sequential tier walk.
   """
 
   use GenServer
@@ -149,4 +154,61 @@ defmodule TorrentClient.Announcer do
   end
 
   defp shuffle_tiers(tiers), do: Enum.map(tiers, &Enum.shuffle/1)
+
+  @doc """
+  Query every tracker concurrently and merge peers as answers land.
+
+  `query` maps a URL to `{:ok, %{peers: [...], interval: seconds}}` or
+  `{:error, reason}`; a query that raises counts as a failed tracker.
+  Maximum coverage: one success never stops the rest, errors and timeouts
+  are skipped, peers dedupe by address. The call resolves within roughly
+  `ceil(n / max_concurrency) * timeout` even when every tracker is
+  black-holed — late answers are dropped, not waited on.
+  """
+  @spec announce_all([String.t()], (String.t() -> {:ok, map()} | {:error, term()}), keyword()) ::
+          {:ok, %{peers: [map()], interval: non_neg_integer() | nil}} | {:error, :no_trackers}
+  def announce_all([], _query, _opts), do: {:error, :no_trackers}
+
+  def announce_all(urls, query, opts \\ [])
+      when is_list(urls) and is_function(query, 1) and is_list(opts) do
+    max_concurrency = Keyword.get(opts, :max_concurrency, 8)
+    timeout = Keyword.get(opts, :timeout, 15_000)
+
+    urls
+    |> Task.async_stream(safe(query),
+      max_concurrency: max_concurrency,
+      timeout: timeout,
+      ordered: false,
+      on_timeout: :kill_task
+    )
+    |> Enum.reduce(%{peers: [], intervals: []}, &merge_answer/2)
+    |> finalize()
+  end
+
+  # A raising query must fail like any dead tracker, not take the caller
+  # down with it. Only exceptions are caught: timeout kills and exits
+  # still propagate.
+  defp safe(query) do
+    fn url ->
+      try do
+        query.(url)
+      rescue
+        _ -> {:error, :query_failed}
+      end
+    end
+  end
+
+  defp merge_answer({:ok, {:ok, %{peers: peers, interval: interval}}}, acc) do
+    %{acc | peers: acc.peers ++ peers, intervals: [interval | acc.intervals]}
+  end
+
+  defp merge_answer(_failed, acc), do: acc
+
+  defp finalize(%{peers: peers, intervals: []}), do: {:ok, %{peers: dedupe(peers), interval: nil}}
+
+  defp finalize(%{peers: peers, intervals: intervals}) do
+    {:ok, %{peers: dedupe(peers), interval: Enum.min(intervals)}}
+  end
+
+  defp dedupe(peers), do: Enum.uniq_by(peers, &{&1.ip_tuple, &1.port})
 end
