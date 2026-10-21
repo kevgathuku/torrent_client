@@ -426,9 +426,14 @@ defmodule TorrentClient.Coordinator do
 
     if stall_count > state.max_stalls do
       Logger.warning("Download stalled with no progress; giving up")
+      # Unlike finish/2 there is no Cancel to protect, so stop every
+      # worker up front: otherwise they keep running (and restarting
+      # against the dead report_to) with no coordinator left.
+      for pid <- Map.keys(state.workers), do: stop_worker(state, pid)
+      reap_orphans(%{state | workers: %{}})
 
       if state.report_to, do: send(state.report_to, {:download_stalled, state.info_hash})
-      {:stop, :normal, %{state | stall_count: stall_count}}
+      {:stop, :normal, %{state | stall_count: stall_count, workers: %{}}}
     else
       Logger.warning("Download stalled; restarting workers (#{stall_count})")
       state = restart_workers(%{state | stall_count: stall_count})

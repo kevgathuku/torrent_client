@@ -238,11 +238,13 @@ defmodule CoordinatorTest do
   end
 
   test "watchdog restart survives a dead peer supervisor", ctx do
-    # Resume note: stop_worker's supervisor-dead catch is unreachable in
-    # deterministic tests — killing the supervisor always kills its
-    # workers first, so their DOWNs clear the map before any restart can
-    # address them. It guards only the restart race (supervisor dying
-    # mid-sweep), which no scheduled test can produce on purpose.
+    # Resume notes: two coordinator branches are unreachable in
+    # deterministic tests. (1) stop_worker's supervisor-dead catch: killing
+    # the supervisor always kills its workers first, so their DOWNs clear
+    # the map before any restart can address them; it guards only the
+    # restart race (supervisor dying mid-sweep). (2) pick/4's excluded guard:
+    # assign/2 now filters zero-count pieces itself, so a retried index can
+    # never come back; the guard stays as the loop-termination proof.
     {listen, port} = listen!()
 
     spawn(fn ->
@@ -439,6 +441,9 @@ defmodule CoordinatorTest do
     assert_receive {:download_stalled, info_hash}, 10_000
     assert info_hash == ctx.info_hash
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
+    # No worker is left behind to dial against the dead coordinator.
+    [{peer_sup, _}] = Registry.lookup(TorrentClient.Registry, {ctx.info_hash, :peer_sup})
+    assert DynamicSupervisor.which_children(peer_sup) == []
   end
 
   test "watchdog sees fresh progress as healthy", ctx do

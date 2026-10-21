@@ -59,6 +59,22 @@ defmodule DownloadStateTest do
     assert {:ok, 0, _} = DownloadState.assign(state, counts([{0, 1}]))
   end
 
+  test "endgame duplicates the rarest in-flight piece, skipping holderless ones" do
+    state = DownloadState.init(2)
+    {:ok, 0, state} = DownloadState.assign(state, counts([{0, 1}, {1, 1}]))
+    {:ok, 1, state} = DownloadState.assign(state, counts([{0, 1}, {1, 1}]))
+    assert DownloadState.endgame?(state)
+    assert {:ok, 1, _} = DownloadState.assign(state, counts([{0, 0}, {1, 2}]))
+  end
+
+  test "endgame with no held in-flight piece is an error" do
+    state = DownloadState.init(2)
+    {:ok, 0, state} = DownloadState.assign(state, counts([{0, 1}, {1, 1}]))
+    {:ok, 1, state} = DownloadState.assign(state, counts([{0, 1}, {1, 1}]))
+    assert DownloadState.endgame?(state)
+    assert {:error, :no_available_piece} = DownloadState.assign(state, counts([{0, 0}, {1, 0}]))
+  end
+
   test "complete marks verified and clears in-flight" do
     state = DownloadState.init(1)
     {:ok, 0, state} = DownloadState.assign(state, counts([{0, 1}]))

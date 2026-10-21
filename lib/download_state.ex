@@ -56,7 +56,8 @@ defmodule DownloadState do
   @doc """
   Assign a piece: rarest-first over `counts` (`%{index => holders}`),
   skipping in-flight and verified pieces. Duplicates an in-flight piece
-  in endgame. Errors when complete or when no needed piece has a holder.
+  in endgame, rarest first. Errors when complete or when no piece with
+  a holder is assignable.
   """
   @spec assign(t(), %{non_neg_integer() => non_neg_integer()}) ::
           {:ok, non_neg_integer(), t()} | {:error, :complete | :no_available_piece}
@@ -72,8 +73,10 @@ defmodule DownloadState do
         end
 
       MapSet.size(state.inflight) > 0 ->
-        index = state.inflight |> MapSet.to_list() |> Enum.min()
-        {:ok, index, state}
+        case rarest(state.inflight, counts) do
+          nil -> {:error, :no_available_piece}
+          index -> {:ok, index, state}
+        end
 
       true ->
         {:error, :no_available_piece}

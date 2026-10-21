@@ -12,7 +12,16 @@ defmodule ScriptSock do
   @impl true
   def close(_sock), do: :ok
 
-  defp next(sock), do: Agent.get_and_update(sock, fn [head | tail] -> {head, tail} end)
+  defp next(sock) do
+    # Function-valued script items run in the caller when reached: a
+    # gate that blocks until the test releases it, so the worker cannot
+    # race past the synchronization point.
+    Agent.get_and_update(sock, fn [head | tail] -> {head, tail} end)
+    |> case do
+      response when is_function(response, 0) -> response.()
+      response -> response
+    end
+  end
 end
 
 defmodule PeerWorkerTest do
@@ -716,10 +725,10 @@ defmodule PeerWorkerTest do
     end
 
     test "stale cancel index is ignored and the piece completes", ctx do
-      # ScriptSock answers instantly, so the test gates on the progress
-      # report: the cancel can only land while the second block is out.
-      # A spurious Cancel send would consume a script item and crash
-      # the run, so clean completion proves none was sent.
+      # Gated on the keepalive receive: the cancel is guaranteed to land
+      # report: the cancel arrives while the second block is outstanding.
+      # A spurious Cancel send would consume a script item and crash the
+      # run, so clean completion proves none was sent.
       info_hash = :crypto.strong_rand_bytes(20)
       peer_hs = Handshake.init(info_hash, @fake_id) |> Handshake.serialize()
       parent = self()
@@ -728,6 +737,14 @@ defmodule PeerWorkerTest do
         PeerMessage.encode(%Piece{index: 0, begin: 0, block: binary_part(ctx.data, 0, 16_384)})
 
       <<len0::32-big, payload0::binary>> = b0
+
+      gate = fn ->
+        send(parent, :at_gate)
+
+        receive do
+          :go -> {:ok, <<0, 0, 0, 0>>}
+        end
+      end
 
       {:ok, b1} =
         PeerMessage.encode(%Piece{
@@ -752,7 +769,7 @@ defmodule PeerWorkerTest do
           :ok,
           {:ok, <<len0::32-big>>},
           {:ok, payload0},
-          {:ok, <<0, 0, 0, 0>>},
+          gate,
           {:ok, <<len1::32-big>>},
           {:ok, payload1}
         ])
@@ -771,7 +788,9 @@ defmodule PeerWorkerTest do
         )
 
       assert_receive {:block_progress, 0}, 1_000
+      assert_receive :at_gate, 1_000
       send(pid, {:cancel_piece, 99})
+      send(pid, :go)
       assert_receive {:EXIT, ^pid, :normal}, 1_000
       assert {:ok, ctx.data} == Disk.read_piece(ctx.base, ctx.info, 0)
     end
@@ -785,6 +804,14 @@ defmodule PeerWorkerTest do
         PeerMessage.encode(%Piece{index: 0, begin: 0, block: binary_part(ctx.data, 0, 16_384)})
 
       <<len0::32-big, payload0::binary>> = b0
+
+      gate = fn ->
+        send(parent, :at_gate)
+
+        receive do
+          :go -> {:ok, <<0, 0, 0, 0>>}
+        end
+      end
 
       {:ok, script} =
         ScriptSock.start([
@@ -800,7 +827,7 @@ defmodule PeerWorkerTest do
           :ok,
           {:ok, <<len0::32-big>>},
           {:ok, payload0},
-          {:ok, <<0, 0, 0, 0>>},
+          gate,
           {:error, :closed}
         ])
 
@@ -818,7 +845,9 @@ defmodule PeerWorkerTest do
         )
 
       assert_receive {:block_progress, 0}, 1_000
+      assert_receive :at_gate, 1_000
       send(pid, {:cancel_piece, 0})
+      send(pid, :go)
       assert_receive {:EXIT, ^pid, {:send_failed, :closed}}, 1_000
     end
   end
