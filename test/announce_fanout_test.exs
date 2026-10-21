@@ -60,6 +60,24 @@ defmodule AnnounceFanoutTest do
     assert elapsed_us < 1_000_000
   end
 
+  test "concurrent queries never exceed max_concurrency" do
+    {:ok, tracker} = Agent.start_link(fn -> {0, 0} end)
+
+    query = fn _url ->
+      Agent.update(tracker, fn {active, peak} -> {active + 1, max(peak, active + 1)} end)
+      Process.sleep(100)
+      Agent.update(tracker, fn {active, peak} -> {active - 1, peak} end)
+      {:ok, %{peers: [], interval: 900}}
+    end
+
+    urls = for i <- 1..5, do: "t#{i}"
+
+    assert {:ok, %{peers: []}} =
+             Announcer.announce_all(urls, query, max_concurrency: 2, timeout: 5_000)
+
+    assert {0, 2} == Agent.get(tracker, & &1)
+  end
+
   test "raising tracker counts as a failed tracker" do
     query =
       query_script(%{

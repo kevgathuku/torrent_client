@@ -167,9 +167,11 @@ defmodule TorrentClient.Announcer do
   """
   @spec announce_all([String.t()], (String.t() -> {:ok, map()} | {:error, term()}), keyword()) ::
           {:ok, %{peers: [map()], interval: non_neg_integer() | nil}} | {:error, :no_trackers}
+  def announce_all(urls, query, opts \\ [])
+
   def announce_all([], _query, _opts), do: {:error, :no_trackers}
 
-  def announce_all(urls, query, opts \\ [])
+  def announce_all(urls, query, opts)
       when is_list(urls) and is_function(query, 1) and is_list(opts) do
     max_concurrency = Keyword.get(opts, :max_concurrency, 8)
     timeout = Keyword.get(opts, :timeout, 15_000)
