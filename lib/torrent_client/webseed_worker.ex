@@ -9,9 +9,11 @@ defmodule TorrentClient.WebseedWorker do
   verified write and `{:block_progress, index}` once the bytes land (so
   the coordinator watchdog sees liveness on slow links), then stops
   `:normal` like a finished peer worker. Anything else — fetch failure,
-  hash mismatch, disk error — stops abnormally and the supervisor
-  restarts it bounded by its intensity; the coordinator requeues from
-  the DOWN the same way it does for peers.
+  hash mismatch, disk error — stops abnormally; the coordinator requeues
+  from the DOWN the same way it does for peers. Unlike peer workers, a
+  failed fetch carries no new information (same URL, same bytes), so the
+  child is `:temporary`: no supervisor restart, no redundant refetch,
+  no intensity pressure on the shared peer supervisor.
 
   A `{:cancel_piece, index}` arriving while the fetch is in flight drops
   the fetched bytes instead of writing them: the piece was already
@@ -42,10 +44,10 @@ defmodule TorrentClient.WebseedWorker do
     GenServer.start_link(__MODULE__, opts)
   end
 
-  # Transient: `:normal` completion never restarts; abnormal exits
-  # restart via the supervisor, bounded by its intensity.
+  # Temporary: the coordinator owns retry (requeue plus its failure
+  # budget), and a restarted fetch would only repeat identical bytes.
   def child_spec(opts) do
-    %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}, restart: :transient}
+    %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}, restart: :temporary}
   end
 
   @impl true

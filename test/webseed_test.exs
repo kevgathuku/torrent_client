@@ -123,20 +123,19 @@ defmodule WebseedTest do
            ) == {:ok, data}
   end
 
-  test "a 200 carrying the whole file is windowed to the slice" do
-    first = :crypto.strong_rand_bytes(@plen)
-    second = :crypto.strong_rand_bytes(@plen)
+  test "a 200 carrying exactly the slice is accepted" do
+    data = :crypto.strong_rand_bytes(@plen)
 
     TorrentClient.WebseedHttpMock
-    |> expect(:get, fn _url, _headers -> env(200, first <> second) end)
+    |> expect(:get, fn _url, _headers -> env(200, data) end)
 
     assert Webseed.fetch_piece(
              TorrentClient.WebseedHttpMock,
              ["https://x/f.bin"],
              single_info(),
-             1
+             0
            ) ==
-             {:ok, second}
+             {:ok, data}
   end
 
   test "unknown schemes are never dialed and total failure errors" do
@@ -170,9 +169,18 @@ defmodule WebseedTest do
     assert {:error, _} = Webseed.fetch_piece(ExitingHttp, ["https://x/f.bin"], single_info(), 0)
   end
 
-  test "short 200 bodies fail closed" do
+  test "short and oversized 200 bodies fail closed" do
     TorrentClient.WebseedHttpMock
     |> expect(:get, fn _url, _headers -> env(200, <<1, 2, 3>>) end)
+    |> expect(:get, fn _url, _headers -> env(200, :crypto.strong_rand_bytes(2 * @plen)) end)
+
+    assert {:error, _} =
+             Webseed.fetch_piece(
+               TorrentClient.WebseedHttpMock,
+               ["https://x/f.bin"],
+               single_info(),
+               0
+             )
 
     assert {:error, _} =
              Webseed.fetch_piece(

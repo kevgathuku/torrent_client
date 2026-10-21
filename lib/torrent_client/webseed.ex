@@ -12,9 +12,11 @@ defmodule TorrentClient.Webseed do
   `fetch_piece/4` maps the piece through `Torrent.piece_span/2` and
   `Torrent.split_span/3`, so a piece straddling files becomes one Range
   GET per file slice, concatenated in torrent order. Bases are tried in
-  order per slice; the first good body wins. A `206` must carry exactly
-  the slice; a `200` (Range ignored) must at least cover the slice
-  window, which is then cut out locally.
+  order per slice; the first good body wins. Both `206` and `200`
+  must carry exactly the slice: a bigger body means the server ignored
+  the Range and sent far more than one piece, so that base is unusable
+  for the slice (repeated misses count against the coordinator's failure
+  budget, which eventually skips the webseed).
   """
 
   @doc """
@@ -89,10 +91,8 @@ defmodule TorrentClient.Webseed do
     if byte_size(body) == length, do: {:ok, body}, else: {:error, :short_body}
   end
 
-  defp slice_body(200, body, offset, length) when is_binary(body) do
-    if byte_size(body) >= offset + length,
-      do: {:ok, binary_part(body, offset, length)},
-      else: {:error, :short_body}
+  defp slice_body(200, body, _offset, length) when is_binary(body) do
+    if byte_size(body) == length, do: {:ok, body}, else: {:error, :short_body}
   end
 
   defp slice_body(_status, _body, _offset, _length), do: {:error, :bad_status}
