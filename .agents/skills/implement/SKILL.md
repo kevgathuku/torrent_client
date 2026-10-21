@@ -8,7 +8,9 @@ Implement the work described by the user in the spec or tickets.
 
 ## 1. Pick up the ticket
 
-If the user passes a ticket reference, fetch it from the issue tracker and state its title before starting. If the reference is ambiguous, ask.
+If the user passes a ticket reference, fetch it from the issue tracker, claim it (`bd update <id> --claim`) so the tracker shows it in progress under you, and state its title before starting. If the reference is ambiguous, ask. The step is done when the ticket shows you as assignee, not just when you have read it.
+
+Before claiming new work, reconcile: list recently merged PRs (`gh pr list --state merged --limit 10`) — bodies name their bead (`Implements <id>` per the `pr` skill) — and close any still-open bead whose PR merged, citing the merge commit. Nothing watches merges for you; this check is the watcher.
 
 ## 2. Branch
 
