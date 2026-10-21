@@ -50,10 +50,17 @@ defmodule TorrentClient.Coordinator do
   `:info_hash` (20-byte binary), `:piece_hashes` (list of 20-byte SHA1s,
   one per piece), `:base_dir`, `:peer_sup` (peer supervisor name or pid).
   Optional: `:peers` (static peer list), `:peer_id`, `:report_to`,
-  `:max_peers` (default #{@default_max_peers}), `:max_inflight`,
-  `:watchdog_timeout` ms, `:max_stalls`, `:max_peer_failures`,
-  `:recv_timeout`/`:piece_timeout` ms passed to workers, effect seams
-  (`:network`, `:disk`, `:sock`, `:clock`), `:name`.
+  `:verified` (already-verified piece indices, seeded from resume bytes),
+  `:refill_peers` (0-arity fun returning fresh `[%Peer{}]`; called once
+  when the swarm exhausts before giving up for real), `:max_peers`
+  (default #{@default_max_peers}), `:max_inflight`, `:watchdog_timeout`
+  ms, `:max_stalls`, `:max_peer_failures`, `:recv_timeout`/
+  `:piece_timeout` ms passed to workers, effect seams (`:network`,
+  `:disk`, `:sock`, `:clock`), `:name`.
+
+  Every verified piece is published to `<base_dir>/.resume` (staged
+  temp-file + rename) as it completes, so a restart reseeds `:verified`
+  from the file instead of re-downloading.
   """
   def start_link(opts) do
     case Keyword.get(opts, :name) do
@@ -107,7 +114,14 @@ defmodule TorrentClient.Coordinator do
       disk: Keyword.get(opts, :disk, TorrentClient.Disk),
       sock: Keyword.get(opts, :sock, TorrentClient.GenTcpSocket),
       sup: Keyword.fetch!(opts, :peer_sup),
-      download: DownloadState.init(length(piece_hashes)) |> DownloadState.note_progress(now),
+      refill_peers: Keyword.get(opts, :refill_peers, nil),
+      refilled: false,
+      download:
+        piece_hashes
+        |> length()
+        |> DownloadState.init()
+        |> DownloadState.restore(Keyword.get(opts, :verified, []))
+        |> DownloadState.note_progress(now),
       workers: %{},
       availability: %{},
       missing: %{},
@@ -120,11 +134,20 @@ defmodule TorrentClient.Coordinator do
     schedule_watchdog(state)
     state = try_assign(state)
 
-    if swarm_exhausted?(state) do
-      if state.report_to, do: send(state.report_to, {:swarm_exhausted, state.info_hash})
-      {:stop, :swarm_exhausted}
-    else
-      {:ok, state}
+    # A resume-seeded torrent may already hold every piece: init cannot
+    # stop normally under a supervisor (failed-to-start), so finish on
+    # the first message instead of idling with nothing left to assign.
+    cond do
+      DownloadState.complete?(state.download) ->
+        send(self(), :finish_seeded)
+        {:ok, state}
+
+      swarm_exhausted?(state) ->
+        if state.report_to, do: send(state.report_to, {:swarm_exhausted, state.info_hash})
+        {:stop, :swarm_exhausted}
+
+      true ->
+        {:ok, state}
     end
   end
 
@@ -219,6 +242,8 @@ defmodule TorrentClient.Coordinator do
     end
   end
 
+  def handle_info(:finish_seeded, state), do: finish(state)
+
   def handle_info(_message, state) do
     {:noreply, state}
   end
@@ -236,10 +261,34 @@ defmodule TorrentClient.Coordinator do
   defp finish_or_exhaust(state) do
     cond do
       DownloadState.complete?(state.download) -> finish(state)
-      swarm_exhausted?(state) -> give_up(state, :swarm_exhausted)
+      swarm_exhausted?(state) -> maybe_refill(state)
       true -> {:noreply, try_assign(state)}
     end
   end
+
+  # Empty swarm is not final while trackers can refill it: ask once,
+  # merge any new peers, and only give up when still unassignable.
+  defp maybe_refill(%{refill_peers: refill, refilled: false} = state)
+       when is_function(refill, 0) do
+    state = %{state | refilled: true}
+
+    case refill.() do
+      peers when is_list(peers) and peers != [] ->
+        Logger.debug("swarm refill: #{length(peers)} fresh peers")
+        known = MapSet.new(state.peers, &peer_key/1)
+        fresh = Enum.reject(peers, &(peer_key(&1) in known))
+        state = %{state | peers: state.peers ++ fresh}
+
+        if swarm_exhausted?(state),
+          do: give_up(state, :swarm_exhausted),
+          else: {:noreply, try_assign(state)}
+
+      _ ->
+        give_up(state, :swarm_exhausted)
+    end
+  end
+
+  defp maybe_refill(state), do: give_up(state, :swarm_exhausted)
 
   # Terminal give-up: report so the session can react, then stop
   # normally. Transient children never restart a `:normal` exit, so no
@@ -388,7 +437,37 @@ defmodule TorrentClient.Coordinator do
   defp verified?(state, index), do: MapSet.member?(state.download.verified, index)
 
   defp complete_piece(state, index) do
-    %{state | download: DownloadState.complete(state.download, index)}
+    state = %{state | download: DownloadState.complete(state.download, index)}
+    save_resume(state)
+    state
+  end
+
+  # Best-effort resume publish: piece bytes land first (workers write
+  # before reporting), then the staged resume file renames over the old
+  # one. A failed save only logs — the download itself is unaffected.
+  defp save_resume(state) do
+    verified = MapSet.size(state.download.verified)
+
+    with plen when is_integer(plen) and plen > 0 <- piece_length(state.info),
+         {:ok, bytes} <-
+           TorrentClient.Disk.encode_resume(%{
+             info_hash: state.info_hash,
+             verified: state.download.verified,
+             total: state.total,
+             piece_length: plen
+           }),
+         path = TorrentClient.Disk.resume_path(state.base_dir),
+         :ok <- state.disk.write(path <> ".tmp", bytes),
+         :ok <- state.disk.rename(path <> ".tmp", path) do
+      Logger.debug("resume saved: #{verified}/#{state.total} verified")
+      :ok
+    else
+      _ -> Logger.warning("Could not persist resume state")
+    end
+  end
+
+  defp piece_length(info) do
+    Map.get(info, :"piece length") || Map.get(info, "piece length")
   end
 
   defp fail_assignment(state, peer, index, :normal) do

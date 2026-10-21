@@ -8,7 +8,8 @@ defmodule TorrentClient.MixProject do
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
-      test_coverage: [summary: [threshold: 80]],
+      test_coverage: [tool: ExCoveralls, summary: [threshold: 80]],
+      dialyzer: [plt_add_apps: [:mix]],
       deps: deps()
     ]
   end
@@ -37,7 +38,8 @@ defmodule TorrentClient.MixProject do
       {:mox, "~> 1.1"},
       {:stream_data, "~> 1.1", only: [:test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:dialyxir, "~> 1.3", only: [:dev], runtime: false}
+      {:dialyxir, "~> 1.3", only: [:dev], runtime: false},
+      {:excoveralls, "~> 0.18", only: :test}
     ]
   end
 end

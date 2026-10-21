@@ -1,5 +1,7 @@
 # TorrentClient
 
+[![Coverage Status](https://coveralls.io/repos/github/kevgathuku/torrent_client/badge.svg?branch=main)](https://coveralls.io/github/kevgathuku/torrent_client?branch=main)
+
 A simple Elixir torrent client, based on [Building a BitTorrent client from the ground up in Go](https://blog.jse.li/posts/torrent/)
 
 ## Installation
@@ -17,68 +19,117 @@ end
 
 # Usage
 
-End-to-end pipeline (`iex -S mix`). Steps that have no machinery yet are marked `#pending`.
+## Downloading (CLI)
 
-1. Parse the torrent file
-```elixir
-{:ok, bento, info} = Downloader.parse_torrent_file("path/to/file.torrent")
-info_hash = Torrent.info_hash(info)
+One command runs the whole pipeline — parse, layout, tracker announce,
+download with resume:
+
+```bash
+mix torrent download path/to/file.torrent --dir ~/downloads
 ```
 
-2. Prepare the download layout
-```elixir
-:ok = TorrentClient.Disk.init_layout("/downloads", bento.info)
+The session announces to every tracker, downloads with rarest-first
+assignment plus watchdog retries, publishes verified pieces to
+`<dir>/.resume` as they complete, and prints `complete <id>` when done.
+Restarting the same command (or the node) resumes from `.resume` —
+already-verified pieces are never re-downloaded. Many torrents run
+concurrently, each in its own supervised subtree and directory.
+
+## All commands
+
+```bash
+mix torrent parse path/to/file.torrent            # info-hash, piece count, total bytes
+mix torrent download path/to/file.torrent [--dir DIR] [--timeout MS]
+mix torrent status                                # every torrent: id, status, path, dir
+mix torrent status <id-or-path>                   # filter to one torrent
+mix torrent pause <id-or-path>                    # stop its workers, keep state
+mix torrent resume <id-or-path>                   # restart with the saved resume
+mix torrent forget <id-or-path>                   # drop from the session, keep files
+mix torrent remove <id-or-path> [--yes] [--dry-run]
 ```
-Creates one file per torrent entry at its declared size. Hostile paths (`..`, absolute) are rejected before anything is created.
 
-3. Ask trackers for peers
-```elixir
-{:ok, pid} = Downloader.start_link("path/to/file.torrent")
-:sys.get_state(pid).peers
+`remove` deletes the layout files plus `.resume` (parent directories,
+possibly shared, survive). It prompts first — defaulting to keep a
+complete torrent's files and delete an incomplete one's; `--yes` skips
+the prompt, `--dry-run` only lists what would go.
+
+Addressing is exact hex id first, unique id prefix second, torrent
+path third:
+
+```bash
+mix torrent pause 9F2C...        # full id
+mix torrent pause 9F2C          # unambiguous prefix
+mix torrent pause file.torrent  # path fallback
 ```
-Peers are fetched on init over HTTP; UDP and multi-tier announces live in `TorrentClient.Announcer`.
 
-Stop the server with `Downloader.stop(pid)`.
+Cross-node control needs no custom protocol: connect with remsh and
+call `TorrentClient.Session` (`Node.connect/1` + `:rpc.call/4`).
 
-4. Download pieces from peers (supervised peer worker)
+## Programmatic
+
 ```elixir
-{:ok, sup} = TorrentClient.PeerSupervisor.start_link()
-{:ok, worker} = TorrentClient.PeerSupervisor.start_peer(sup,
-  peer: hd(peers),
-  info_hash: Base.decode16!(info_hash),
-  peer_id: Utils.generate_peer_id(),
-  info: bento.info,
-  piece_index: 0,
-  piece_hash: hd(Torrent.get_piece_hashes(bento)),
-  base_dir: "/downloads"
-)
+{:ok, id} = TorrentClient.Session.add_torrent("path/to/file.torrent", base_dir: "~/downloads")
+TorrentClient.Session.status()          # [%{id: _, path: _, base_dir: _, status: _}]
+TorrentClient.Session.pause(id)
+TorrentClient.Session.resume(id)
+TorrentClient.Session.forget(id)        # drop entry, keep data
+{:ok, ^id, files} = TorrentClient.Session.remove(id, dry_run: true)
 ```
-The worker is unnamed, so many share one supervisor. It handshakes, sends
-interest plus unchoke, requests the piece in 16 KiB blocks (up to five in
-flight) while unchoked and under a per-piece deadline, verifies the SHA1,
-and writes through the disk seam — then exits `:normal` (which never
-restarts). Any failure stops fail-closed and the supervisor restarts it,
-bounded by its intensity; a deadline give-up publishes the missing blocks
-for the coordinator to requeue.
 
-5. #pending Coordinate verified writes to disk with watchdog re-requests (per-torrent coordinator — kog.9)
+Statuses: `:downloading | :paused | :complete | :stalled | :exhausted`.
 
-6. Pause/resume state (codec done, coordinator wiring #pending)
+## Configuration
+
+The session picks its listen port once at startup: an explicit `:port`,
+else the port from `:config_path`, else a free OS-assigned port. A
+configured port that is already taken falls back to a free one rather
+than colliding. The config file is `key = value`, one per line
+(`#` comments, unknown keys ignored):
+
+```
+# client.conf
+port = 6881
+```
+
 ```elixir
-# Pause: encode verified progress and store the bytes
-{:ok, encoded} = TorrentClient.Disk.encode_resume(%{
-  info_hash: Utils.sha_sum("seed-bytes"),
-  verified: MapSet.new([0, 1]),
-  total: 10,
-  piece_length: 4
-})
-:ok = TorrentClient.Disk.write("/downloads/resume.bin", encoded)
-
-# Resume: load the bytes back and decode
-{:ok, bytes} = TorrentClient.Disk.read("/downloads/resume.bin")
-{:ok, %{info_hash: hash, verified: indices}} = TorrentClient.Disk.decode_resume(bytes)
-# #pending re-verify `indices` against piece hashes and fetch the rest (kog.9)
+# releases: config/config.exs
+config :torrent_client, session: [port: 6881, config_path: "client.conf"]
 ```
+
+## Logging
+
+Levels follow the event, not the module: `debug` for routine detail
+(port pick, per-tracker announce outcomes, resume hits), `info` for
+lifecycle transitions (added, paused, resumed, forgotten, removed,
+complete), `warning` for degraded-but-continuing (occupied-port
+fallback, distrusted resume bytes, failed resume save), `error` for
+failed operations.
+
+A debug-and-up file log lands at `log/torrent_client.log` (level-tagged
+lines for post-mortems); the console keeps its own level, controlled per
+invocation with `mix torrent --log-level <debug|info|warning|error>`
+(default `info`). Disable or relocate the file with app config:
+
+```elixir
+# config/config.exs
+config :torrent_client, log_file: nil                  # disable
+config :torrent_client, log_file: "/var/log/torrent.log"
+```
+
+## Internals (per-torrent machinery the session drives)
+
+- Layout: `TorrentClient.Disk.init_layout(dir, bento.info)` creates one
+  file per torrent entry at its declared size. Hostile paths (`..`,
+  absolute) are rejected before anything is created.
+- Peer worker: handshakes, sends interest plus unchoke, requests the
+  piece in 16 KiB blocks (up to five in flight) while unchoked and under
+  a per-piece deadline, verifies the SHA1, and writes through the disk
+  seam — then exits `:normal` (which never restarts). Failures stop
+  fail-closed and the supervisor restarts them bounded by intensity.
+- Coordinator: rarest-first assignment, in-flight tracking, endgame
+  duplication with wire Cancel, stall watchdog with a give-up budget,
+  poison-peer skip, and one re-announce before giving up on an empty
+  swarm.
 
 Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
 and published on [HexDocs](https://hexdocs.pm). Once published, the docs can

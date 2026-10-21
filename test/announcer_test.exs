@@ -14,7 +14,7 @@ defmodule TorrentClient.AnnouncerTest do
 
   defp manjaro do
     {:ok, bento, info} =
-      Downloader.parse_torrent_file("test/_data/manjaro-gnome-17.1.9-stable-x86_64.torrent")
+      TestHelpers.parse_torrent("test/_data/manjaro-gnome-17.1.9-stable-x86_64.torrent")
 
     %{bento: bento, info_hash: Torrent.info_hash(info)}
   end
@@ -195,5 +195,48 @@ defmodule TorrentClient.AnnouncerTest do
       end)
 
     assert is_pid(restarted)
+  end
+
+  test "query_once announces to a single UDP tracker without the tier walk" do
+    stub_transport(self(), <<192, 168, 1, 1, 0x1F, 0x90>>)
+    %{bento: bento, info_hash: info_hash} = manjaro()
+
+    assert {:ok, %{peers: [%Peer{ip_tuple: {192, 168, 1, 1}, port: 8080}]}} =
+             TorrentClient.Announcer.query_once(udp_url(),
+               bento: bento,
+               info_hash: info_hash,
+               peer_id: String.duplicate("p", 20),
+               port: 6881,
+               udp: TorrentClient.UdpMock
+             )
+
+    assert_receive :announced, 1_000
+  end
+
+  test "query_once announces to a single HTTP tracker through the requests seam" do
+    %{bento: bento, info_hash: info_hash} = manjaro()
+    [http_url | _] = Torrent.announce_tiers(bento) |> hd()
+
+    assert {:ok, %{peers: peers}} =
+             TorrentClient.Announcer.query_once(http_url,
+               bento: bento,
+               info_hash: info_hash,
+               peer_id: String.duplicate("p", 20),
+               port: 6881
+             )
+
+    assert length(peers) == 5
+  end
+
+  test "query_once rejects unknown schemes without touching the network" do
+    %{bento: bento, info_hash: info_hash} = manjaro()
+
+    assert {:error, :unsupported_scheme} =
+             TorrentClient.Announcer.query_once("ftp://example.com/announce",
+               bento: bento,
+               info_hash: info_hash,
+               peer_id: String.duplicate("p", 20),
+               port: 6881
+             )
   end
 end

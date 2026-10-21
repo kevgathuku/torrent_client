@@ -17,14 +17,14 @@ defmodule TorrentFidelityTest do
 
   test "info_hash ignores nil-valued absent keys" do
     {:ok, _bento, info} =
-      Downloader.parse_torrent_file("test/_data/debian-12.1.0-amd64-netinst.iso.torrent")
+      TestHelpers.parse_torrent("test/_data/debian-12.1.0-amd64-netinst.iso.torrent")
 
     assert Torrent.info_hash(Map.put(info, "source", nil)) == Torrent.info_hash(info)
   end
 
   test "info_hash equals the hash of the as-found info dict" do
     for path <- Path.wildcard("test/_data/*.torrent") do
-      {:ok, _bento, info} = Downloader.parse_torrent_file(path)
+      {:ok, _bento, info} = TestHelpers.parse_torrent(path)
       {:ok, bytes} = File.read(path)
       {:ok, raw} = RawBencode.info_bytes(bytes)
 

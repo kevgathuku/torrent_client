@@ -258,7 +258,7 @@ defmodule DiskTest do
   end
 
   test "resume round-trips through the real fixture layout", %{base: base} do
-    {:ok, bento, _info} = Downloader.parse_torrent_file(TestHelpers.multi_file_torrent())
+    {:ok, bento, _info} = TestHelpers.parse_torrent(TestHelpers.multi_file_torrent())
     info = bento.info
 
     assert {:ok, entries} = Torrent.layout(info)

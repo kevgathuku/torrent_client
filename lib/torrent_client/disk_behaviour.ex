@@ -11,6 +11,12 @@ defmodule TorrentClient.DiskBehaviour do
   @doc "Write data to the file at path."
   @callback write(path :: Path.t(), data :: iodata()) :: :ok | {:error, term()}
 
+  @doc "Atomically publish a staged file (resume temp-file + rename)."
+  @callback rename(from :: Path.t(), to :: Path.t()) :: :ok | {:error, term()}
+
+  @doc "Delete a single file (torrent removal; directories are never wiped)."
+  @callback delete(path :: Path.t()) :: :ok | {:error, term()}
+
   @doc "Create parent dirs and size every file in the torrent layout."
   @callback init_layout(base_dir :: Path.t(), info :: map()) :: :ok | {:error, term()}
 

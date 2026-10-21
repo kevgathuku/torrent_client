@@ -1,14 +1,18 @@
 defmodule TorrentClient.ApplicationTest do
   use ExUnit.Case, async: false
 
-  test "supervision tree hosts a Registry and a session supervisor" do
+  test "supervision tree hosts a Registry, a session supervisor, and the session" do
     children =
       TorrentClient.Application
       |> Supervisor.which_children()
       |> Enum.map(fn {id, _pid, _type, _modules} -> id end)
       |> Enum.sort()
 
-    assert children == [TorrentClient.Registry, TorrentClient.SessionSupervisor]
+    assert children == [
+             TorrentClient.Registry,
+             TorrentClient.Session,
+             TorrentClient.SessionSupervisor
+           ]
   end
 
   test "two children start under distinct registry keys without already_started" do

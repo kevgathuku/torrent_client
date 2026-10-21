@@ -93,6 +93,20 @@ defmodule DownloadState do
     }
   end
 
+  @doc """
+  Seed a fresh state with already-verified pieces (resume load).
+  Out-of-range indices are dropped: resume bytes are hostile input.
+  """
+  @spec restore(t(), [non_neg_integer()] | MapSet.t()) :: t()
+  def restore(%__MODULE__{total: total} = state, indices) do
+    valid =
+      indices
+      |> MapSet.new()
+      |> MapSet.filter(&(is_integer(&1) and &1 >= 0 and &1 < total))
+
+    %{state | verified: valid}
+  end
+
   @doc "Return an in-flight piece to needed (no-op when idle)."
   @spec requeue(t(), non_neg_integer()) :: t()
   def requeue(state, index) do

@@ -151,6 +151,27 @@ defmodule TorrentClient.Announcer do
     end
   end
 
+  @doc """
+  One-shot announce to a single tracker URL (UDP or HTTP), for session
+  startup and swarm refills. Same wire code as the supervised cycle,
+  without the tier walk: returns `{:ok, %{peers, interval}}`.
+  """
+  @spec query_once(String.t(), keyword()) ::
+          {:ok, %{peers: [map()], interval: term()}} | {:error, term()}
+  def query_once(url, opts) do
+    state = %{
+      bento: Keyword.fetch!(opts, :bento),
+      info_hash: Keyword.fetch!(opts, :info_hash),
+      peer_id: Keyword.fetch!(opts, :peer_id),
+      port: Keyword.fetch!(opts, :port),
+      udp: Keyword.get(opts, :udp, TorrentClient.Udp),
+      key: :rand.uniform(0xFFFFFFFF),
+      started: false
+    }
+
+    announce(state, url)
+  end
+
   defp shuffle_tiers(tiers), do: Enum.map(tiers, &Enum.shuffle/1)
 
   @doc """

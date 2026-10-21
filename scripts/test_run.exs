@@ -93,7 +93,8 @@ unless File.exists?(torrent_filename) do
 end
 
 # 1. Parse the torrent and hash the as-found info dict.
-{:ok, bento, info} = Downloader.parse_torrent_file(torrent_filename)
+{:ok, torrent_bytes} = File.read(torrent_filename)
+{:ok, bento, info} = Torrent.parse_bytes(torrent_bytes)
 info_hash = Torrent.info_hash(info)
 Logger.info("info_hash=#{info_hash} pieces=#{length(Torrent.get_piece_hashes(bento))}")
 
@@ -101,30 +102,33 @@ Logger.info("info_hash=#{info_hash} pieces=#{length(Torrent.get_piece_hashes(ben
 :ok = TorrentClient.Disk.init_layout(download_dir, bento.info)
 Logger.info("layout ready under #{download_dir}")
 
-# 3. Ask trackers for peers (async inside the server; poll briefly),
-# plus the event/key parameters trackers need on started announces.
-{:ok, pid} = Downloader.start_link(torrent_filename)
+# 3. Ask trackers for peers (bounded fan-out; tolerates unreachable
+# trackers), plus the event/key parameters trackers need on started
+# announces.
+peer_id = Utils.generate_peer_id()
+
+# query_once dispatches UDP vs HTTP(S) per URL so mixed tiers work.
+query = fn url ->
+  TorrentClient.Announcer.query_once(url,
+    bento: bento,
+    info_hash: info_hash,
+    peer_id: peer_id,
+    port: 6881
+  )
+end
+
+tracker_urls = bento |> Torrent.announce_tiers() |> List.flatten()
 
 peers =
-  Enum.reduce_while(1..30, [], fn _, _ ->
-    # The legacy server blocks in a synchronous HTTP fetch with no
-    # timeout of its own; outwait it instead of dying on sys timeouts.
-    try do
-      case :sys.get_state(pid, 15_000).peers do
-        [] -> Process.sleep(1_000) && {:cont, []}
-        peers -> {:halt, peers}
-      end
-    catch
-      :exit, {:timeout, _} -> {:cont, []}
-    end
-  end)
+  case TorrentClient.Announcer.announce_all(tracker_urls, query, timeout: 10_000) do
+    {:ok, %{peers: peers}} -> peers
+    {:error, _} -> []
+  end
 
 Logger.info("peers=#{length(peers)}#{if peers == [], do: " (trackers unreachable?)", else: ""}")
 
 if first = List.first(peers),
   do: Logger.info("first peer=#{inspect(Map.take(first, [:ip_tuple, :port]))}")
-
-Downloader.stop(pid)
 
 # (event/key sample for started announces)
 sample_url =
@@ -172,7 +176,10 @@ spawn(fn ->
   # exchange, like real trackers expect.
   {:ok, {host2, cli_port2, announce_req}} = :gen_udp.recv(srv, 0, 5_000)
   <<_conn::64-big, 1::32-big, axid::32-big, _rest::binary>> = announce_req
-  {:ok, announce_resp} = TorrentClient.UdpTracker.encode_announce_response(axid, 900, 0, 1, <<10, 0, 0, 9, 26, 225>>)
+
+  {:ok, announce_resp} =
+    TorrentClient.UdpTracker.encode_announce_response(axid, 900, 0, 1, <<10, 0, 0, 9, 26, 225>>)
+
   :ok = :gen_udp.send(srv, host2, cli_port2, announce_resp)
 end)
 
@@ -184,7 +191,10 @@ udp_port =
   end
 
 {:ok, connect_req} = TorrentClient.UdpTracker.encode_connect(0xCAFE)
-{:ok, %{data: connect_raw, family: :inet}} = TorrentClient.Udp.send_recv("127.0.0.1", udp_port, connect_req, 2_000)
+
+{:ok, %{data: connect_raw, family: :inet}} =
+  TorrentClient.Udp.send_recv("127.0.0.1", udp_port, connect_req, 2_000)
+
 {:ok, %{connection_id: conn_id}} = TorrentClient.UdpTracker.decode_connect(connect_raw, 0xCAFE)
 
 {:ok, announce_req} =
@@ -203,7 +213,9 @@ udp_port =
     port: 6881
   })
 
-{:ok, %{data: announce_raw}} = TorrentClient.Udp.send_recv("127.0.0.1", udp_port, announce_req, 2_000)
+{:ok, %{data: announce_raw}} =
+  TorrentClient.Udp.send_recv("127.0.0.1", udp_port, announce_req, 2_000)
+
 {:ok, %{peers: raw_peers}} = TorrentClient.UdpTracker.decode_announce(announce_raw, 0xBEEF, :ipv4)
 {:ok, [%Peer{ip_tuple: {10, 0, 0, 9}, port: 6881}]} = Peer.parse_compact(raw_peers, :ipv4)
 Logger.info("udp tracker round-trip ok=true")
@@ -337,5 +349,8 @@ resume_path = Path.join(download_dir, "resume.bin")
 :ok = TorrentClient.Disk.write(resume_path, encoded)
 {:ok, stored} = TorrentClient.Disk.read(resume_path)
 {:ok, decoded} = TorrentClient.Disk.decode_resume(stored)
-true = decoded == %{info_hash: resume.info_hash, verified: [0, 1, 2], total: 3, piece_length: 32_768}
+
+true =
+  decoded == %{info_hash: resume.info_hash, verified: [0, 1, 2], total: 3, piece_length: 32_768}
+
 Logger.info("resume round-trip ok=true")

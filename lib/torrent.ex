@@ -14,7 +14,7 @@ defmodule Torrent do
 
     num_hashes = div(pieces_length, @hash_length)
 
-    for i <- 0..(num_hashes - 1), do: binary_part(pieces, i, 20)
+    for i <- 0..(num_hashes - 1), do: binary_part(pieces, i * @hash_length, @hash_length)
   end
 
   @doc """
@@ -205,8 +205,29 @@ defmodule Torrent do
   defp info_total(_info), do: 0
 
   @doc """
+  Parse `.torrent` bytes. Returns the bento struct alongside the raw
+  string-keyed info map, which is what `info_hash/1` must hash (structs
+  drop unknown info keys, so the struct alone cannot reproduce the hash).
+  Stays pure: callers read the file (the session through its disk seam).
+  """
+  @spec parse_bytes(binary()) :: {:ok, struct(), map()} | {:error, term()}
+  def parse_bytes(contents) when is_binary(contents) do
+    # Double parse of a few KB: structs drop unknown info keys, so the raw
+    # string-keyed map comes from a plain decode for hashing.
+    with {:ok, parsed_torrent} <- Bento.torrent(contents),
+         {:ok, decoded} <- Bento.decode(contents) do
+      case decoded do
+        %{"info" => info} when is_map(info) -> {:ok, parsed_torrent, info}
+        _ -> {:error, :missing_info}
+      end
+    end
+  end
+
+  def parse_bytes(_contents), do: {:error, :invalid_torrent}
+
+  @doc """
   Hex info-hash over the full decoded info map, all keys as found.
-  Expects the raw string-keyed map from a validated torrent (`parse_torrent_file`);
+  Expects the raw string-keyed map from a validated torrent (`parse_bytes/1`);
   file bytes are the validated hostile input, so this stays total. Structs
   must not be re-encoded here: Bento drops unknown info keys.
   """

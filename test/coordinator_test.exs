@@ -6,6 +6,10 @@ defmodule CoordinatorTest do
   """
   use ExUnit.Case, async: false
 
+  import Mox
+  setup :set_mox_global
+  setup :verify_on_exit!
+
   defmodule ManualClock do
     @moduledoc false
     # Frozen-until-advanced clock: watchdog checks fire in real time
@@ -189,6 +193,144 @@ defmodule CoordinatorTest do
     assert_receive {:swarm_exhausted, info_hash}, 5_000
     assert info_hash == ctx.info_hash
     Process.flag(:trap_exit, false)
+  end
+
+  test "resume seed completes without refetching verified pieces", ctx do
+    parent = self()
+    {listen, port} = listen!()
+
+    spawn(fn ->
+      {:ok, sock} = :gen_tcp.accept(listen, 5_000)
+      seed_greet(sock, ctx.info_hash, full_bits(2))
+      serve_all(sock, ctx.data)
+      send(parent, :seed_done)
+    end)
+
+    peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
+    start_sup_unlinked(coord_opts(ctx, peers: peers, verified: [0]))
+
+    pid = coord_pid(ctx.info_hash)
+    ref = Process.monitor(pid)
+
+    assert_receive {:torrent_complete, info_hash}, 15_000
+    assert info_hash == ctx.info_hash
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 15_000
+    assert_receive :seed_done, 5_000
+
+    assert {:ok, Enum.at(ctx.data, 1)} == Disk.read_piece(ctx.base, ctx.info, 1)
+    assert {:ok, resume} = Disk.read(Disk.resume_path(ctx.base))
+
+    assert {:ok, %{verified: [0, 1], total: 2, info_hash: saved_hash}} =
+             TorrentClient.Disk.decode_resume(resume)
+
+    assert saved_hash == ctx.info_hash
+  end
+
+  test "fully seeded resume reports completion without any peer", ctx do
+    start_sup_unlinked(coord_opts(ctx, peers: [], verified: [0, 1]))
+    assert_receive {:torrent_complete, info_hash}, 5_000
+    assert info_hash == ctx.info_hash
+  end
+
+  test "refill hook fires before giving up for real", ctx do
+    parent = self()
+    {refuse_listen, refuse_port} = listen!()
+    {seed_listen, seed_port} = listen!()
+
+    spawn(fn -> refuse_loop(refuse_listen, parent, 0) end)
+
+    # Accept loop: pieces race onto separate connections and the peer
+    # supervisor may redial, so serve every generation, not just two.
+    spawn(fn -> seed_accept_loop(seed_listen, ctx) end)
+
+    poison = [%Peer{ip_tuple: {127, 0, 0, 1}, port: refuse_port}]
+    fresh = [%Peer{ip_tuple: {127, 0, 0, 1}, port: seed_port}]
+
+    refill = fn ->
+      send(parent, :refilled)
+      fresh
+    end
+
+    start_sup_unlinked(coord_opts(ctx, peers: poison, max_peer_failures: 1, refill_peers: refill))
+
+    pid = coord_pid(ctx.info_hash)
+    ref = Process.monitor(pid)
+
+    assert_receive :refilled, 10_000
+    assert_receive {:torrent_complete, info_hash}, 15_000
+    assert info_hash == ctx.info_hash
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
+  end
+
+  test "refill with only known peers still gives up exhausted", ctx do
+    parent = self()
+    {listen, port} = listen!()
+
+    spawn(fn -> refuse_loop(listen, parent, 0) end)
+
+    peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
+    # The refill offers nothing new (same poison peer): the swarm is
+    # still unassignable, so the give-up stands.
+    refill = fn -> peers end
+
+    start_sup_unlinked(coord_opts(ctx, peers: peers, max_peer_failures: 1, refill_peers: refill))
+
+    pid = coord_pid(ctx.info_hash)
+    ref = Process.monitor(pid)
+
+    assert_receive {:swarm_exhausted, info_hash}, 10_000
+    assert info_hash == ctx.info_hash
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
+  end
+
+  test "a failed resume save logs without breaking completion", ctx do
+    stub(TorrentClient.DiskMock, :write, fn _path, _data -> {:error, :boom} end)
+
+    {listen, port} = listen!()
+
+    spawn(fn ->
+      case :gen_tcp.accept(listen, 10_000) do
+        {:ok, sock} -> :gen_tcp.recv(sock, 0, 30_000)
+        {:error, _} -> :ok
+      end
+    end)
+
+    peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
+
+    start_sup_unlinked(
+      coord_opts(ctx, peers: peers, disk: TorrentClient.DiskMock, recv_timeout: 30_000)
+    )
+
+    pid = coord_pid(ctx.info_hash)
+    ref = Process.monitor(pid)
+
+    # No worker can finish against the hanging seed; drive both
+    # completions by hand so the save path runs twice and still ends.
+    send(pid, {:piece_complete, 0})
+    send(pid, {:piece_complete, 1})
+
+    assert_receive {:torrent_complete, info_hash}, 5_000
+    assert info_hash == ctx.info_hash
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
+  end
+
+  test "empty refill still gives up exhausted", ctx do
+    parent = self()
+    {listen, port} = listen!()
+
+    spawn(fn -> refuse_loop(listen, parent, 0) end)
+
+    peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
+    refill = fn -> [] end
+
+    start_sup_unlinked(coord_opts(ctx, peers: peers, max_peer_failures: 1, refill_peers: refill))
+
+    pid = coord_pid(ctx.info_hash)
+    ref = Process.monitor(pid)
+
+    assert_receive {:swarm_exhausted, info_hash}, 10_000
+    assert info_hash == ctx.info_hash
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
   end
 
   test "non-positive peer cap fails fast instead of stalling silently", ctx do
@@ -625,18 +767,22 @@ defmodule CoordinatorTest do
       gain_loop(listen1, ctx, data, has_zero, parent, port1)
     end)
 
-    spawn(fn ->
-      {:ok, sock} = :gen_tcp.accept(listen2, 5_000)
-      seed_greet(sock, ctx.info_hash, <<0b01000000>>)
-      serve_all(sock, data)
-    end)
+    # Accept loop, not a single accept: watchdog restarts and retries
+    # redial peers, and a served-once seed would starve the redial into
+    # timeouts, a skip, and a false exhausted. Every connection gets the
+    # same no-piece-0 bitfield; only p1 ever gains piece 0 (via Have).
+    spawn(fn -> gain_peer_loop(listen2, ctx, data) end)
 
     peers = [
       %Peer{ip_tuple: {127, 0, 0, 1}, port: port1},
       %Peer{ip_tuple: {127, 0, 0, 1}, port: port2}
     ]
 
-    start_sup_unlinked(coord_opts(ctx, peers: peers, info: info, piece_hashes: hashes))
+    # Generous recv budget: loaded runners stall handshakes, and a
+    # stall must cost a retry here, not one of the three skip strikes.
+    start_sup_unlinked(
+      coord_opts(ctx, peers: peers, info: info, piece_hashes: hashes, recv_timeout: 10_000)
+    )
 
     pid = coord_pid(ctx.info_hash)
     ref = Process.monitor(pid)
@@ -648,11 +794,26 @@ defmodule CoordinatorTest do
     assert {:ok, Enum.at(data, 2)} == Disk.read_piece(ctx.base, info, 2)
   end
 
+  defp gain_peer_loop(listen, ctx, data) do
+    case :gen_tcp.accept(listen, 15_000) do
+      {:ok, sock} ->
+        spawn(fn ->
+          seed_greet(sock, ctx.info_hash, <<0b01000000>>)
+          serve_all(sock, data)
+        end)
+
+        gain_peer_loop(listen, ctx, data)
+
+      {:error, _} ->
+        :ok
+    end
+  end
+
   # Serves every request instantly. The bitfield reflects whether the
   # peer has gained piece 0 yet; mid-download Have announcements
   # exercise the coordinator's missing-cleared path.
   defp gain_loop(listen, ctx, data, has_zero, parent, port) do
-    case :gen_tcp.accept(listen, 5_000) do
+    case :gen_tcp.accept(listen, 15_000) do
       {:ok, sock} ->
         send(parent, {:accepted, port})
 
@@ -709,6 +870,21 @@ defmodule CoordinatorTest do
     assert_receive {:swarm_exhausted, info_hash}, 10_000
     assert info_hash == ctx.info_hash
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
+  end
+
+  defp seed_accept_loop(listen, ctx) do
+    case :gen_tcp.accept(listen, 10_000) do
+      {:ok, sock} ->
+        spawn(fn ->
+          seed_greet(sock, ctx.info_hash, full_bits(2))
+          serve_all(sock, ctx.data)
+        end)
+
+        seed_accept_loop(listen, ctx)
+
+      {:error, _} ->
+        :ok
+    end
   end
 
   defp refuse_loop(listen, parent, _n) do

@@ -22,6 +22,8 @@ defmodule EffectBehavioursTest do
     assert {:init_layout, 2} in TorrentClient.DiskBehaviour.behaviour_info(:callbacks)
     assert {:read_piece, 3} in TorrentClient.DiskBehaviour.behaviour_info(:callbacks)
     assert {:write_piece, 4} in TorrentClient.DiskBehaviour.behaviour_info(:callbacks)
+    assert {:rename, 2} in TorrentClient.DiskBehaviour.behaviour_info(:callbacks)
+    assert {:delete, 1} in TorrentClient.DiskBehaviour.behaviour_info(:callbacks)
     assert TorrentClient.Disk.__info__(:attributes)[:behaviour] == [TorrentClient.DiskBehaviour]
     assert TorrentClient.DiskMock.__info__(:functions)[:read] == 1
     assert TorrentClient.DiskMock.__info__(:functions)[:init_layout] == 2

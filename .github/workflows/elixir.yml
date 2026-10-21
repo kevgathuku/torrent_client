@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - name: Set up Elixir
       uses: erlef/setup-beam@v1.24.1
       with:
@@ -35,5 +35,12 @@ jobs:
         restore-keys: ${{ runner.os }}-mix-
     - name: Install dependencies
       run: mix deps.get
-    - name: Run tests
-      run: mix test
+    # Single suite run: posts to coveralls.io (token from the repo
+    # secret) and enforces the 80% gate via minimum_coverage. Set the
+    # same 80% threshold in the coveralls.io project settings so the
+    # commit status fails below it; mix.exs keeps the local gate.
+    - name: Run tests and post coverage to Coveralls
+      run: mix coveralls.post
+      env:
+        MIX_ENV: test
+        COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
