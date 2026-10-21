@@ -94,6 +94,25 @@ port = 6881
 config :torrent_client, session: [port: 6881, config_path: "client.conf"]
 ```
 
+## Logging
+
+Levels follow the event, not the module: `debug` for routine detail
+(port pick, per-tracker announce outcomes, resume hits), `info` for
+lifecycle transitions (added, paused, resumed, forgotten, removed,
+complete), `warning` for degraded-but-continuing (occupied-port
+fallback, distrusted resume bytes, failed resume save), `error` for
+failed operations.
+
+A debug-and-up file log lands at `log/torrent_client.log` (level-tagged
+lines for post-mortems); the console keeps its own level. Disable or
+relocate it with app config:
+
+```elixir
+# config/config.exs
+config :torrent_client, log_file: nil                  # disable
+config :torrent_client, log_file: "/var/log/torrent.log"
+```
+
 ## Internals (per-torrent machinery the session drives)
 
 - Layout: `TorrentClient.Disk.init_layout(dir, bento.info)` creates one

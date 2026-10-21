@@ -93,9 +93,12 @@ defmodule TorrentClient.Session do
 
   @impl true
   def init(opts) do
+    port = resolve_port(opts)
+    Logger.debug("session starting on port #{port}")
+
     {:ok,
      %{
-       port: resolve_port(opts),
+       port: port,
        peer_id: Utils.generate_peer_id(),
        torrents: %{},
        disk: Keyword.get(opts, :disk, Disk),
@@ -116,8 +119,13 @@ defmodule TorrentClient.Session do
   @impl true
   def handle_call({:add, path, opts}, _from, state) do
     case start_torrent(state, path, opts) do
-      {:ok, id, state} -> {:reply, {:ok, id}, state}
-      {:error, _} = err -> {:reply, err, state}
+      {:ok, id, state} ->
+        Logger.info("added #{id} #{path}")
+        {:reply, {:ok, id}, state}
+
+      {:error, _} = err ->
+        Logger.error("add failed #{path}: #{inspect(err)}")
+        {:reply, err, state}
     end
   end
 
@@ -125,6 +133,7 @@ defmodule TorrentClient.Session do
     case find(state, id_or_path) do
       {:ok, raw, entry} ->
         state = pause_entry(state, raw, entry)
+        Logger.info("paused #{entry.id}")
         {:reply, {:ok, entry.id}, state}
 
       {:error, _} = err ->
@@ -136,8 +145,13 @@ defmodule TorrentClient.Session do
     case find(state, id_or_path) do
       {:ok, raw, entry} ->
         case resume_entry(state, raw, entry) do
-          {:ok, id, state} -> {:reply, {:ok, id}, state}
-          {:error, _} = err -> {:reply, err, state}
+          {:ok, id, state} ->
+            Logger.info("resumed #{id}")
+            {:reply, {:ok, id}, state}
+
+          {:error, _} = err ->
+            Logger.error("resume failed #{entry.id}: #{inspect(err)}")
+            {:reply, err, state}
         end
 
       {:error, _} = err ->
@@ -149,6 +163,7 @@ defmodule TorrentClient.Session do
     case find(state, id_or_path) do
       {:ok, raw, entry} ->
         stop_sup(state, entry)
+        Logger.info("forgot #{entry.id}")
         {:reply, {:ok, entry.id}, %{state | torrents: Map.delete(state.torrents, raw)}}
 
       {:error, _} = err ->
@@ -218,7 +233,15 @@ defmodule TorrentClient.Session do
   defp resolve_port(opts) do
     port = Keyword.get(opts, :port) || configured_port(opts)
 
-    if is_integer(port) and port_free?(port), do: port, else: Utils.get_port()
+    if is_integer(port) and port_free?(port) do
+      port
+    else
+      if is_integer(port) do
+        Logger.warning("port #{port} busy, falling back to a free pick")
+      end
+
+      Utils.get_port()
+    end
   end
 
   defp configured_port(opts) do
@@ -302,6 +325,7 @@ defmodule TorrentClient.Session do
         {:ok, entry.id, put_in(state.torrents[entry.raw], %{entry | sup: sup})}
 
       {:error, _} = err ->
+        Logger.error("subtree start failed #{entry.id}: #{inspect(err)}")
         err
     end
   end
@@ -319,12 +343,31 @@ defmodule TorrentClient.Session do
   # Resume bytes are hostile input: the identity must match the torrent
   # on every field or the verified set is dropped, never trusted.
   defp load_verified(state, base_dir, raw, total, plen) do
-    with {:ok, bytes} <- state.disk.read(Disk.resume_path(base_dir)),
-         {:ok, %{info_hash: ^raw, verified: indices, total: ^total, piece_length: ^plen}} <-
-           Disk.decode_resume(bytes) do
-      indices
-    else
-      _ -> []
+    path = Disk.resume_path(base_dir)
+
+    case state.disk.read(path) do
+      {:error, :enoent} ->
+        Logger.debug("no resume at #{path}")
+        []
+
+      {:ok, bytes} ->
+        case Disk.decode_resume(bytes) do
+          {:ok, %{info_hash: ^raw, verified: indices, total: ^total, piece_length: ^plen}} ->
+            Logger.debug("resume at #{path}: #{length(indices)}/#{total} verified")
+            indices
+
+          {:ok, _} ->
+            Logger.warning("ignoring resume with mismatched identity at #{path}")
+            []
+
+          {:error, reason} ->
+            Logger.warning("ignoring undecodable resume at #{path}: #{inspect(reason)}")
+            []
+        end
+
+      {:error, reason} ->
+        Logger.warning("ignoring unreadable resume at #{path}: #{inspect(reason)}")
+        []
     end
   end
 
@@ -346,20 +389,31 @@ defmodule TorrentClient.Session do
 
   defp announce(state, entry, urls) do
     query = fn url ->
-      Announcer.query_once(url,
-        bento: entry.bento,
-        info_hash: entry.id,
-        peer_id: state.peer_id,
-        port: state.port,
-        udp: state.udp
-      )
+      outcome =
+        Announcer.query_once(url,
+          bento: entry.bento,
+          info_hash: entry.id,
+          peer_id: state.peer_id,
+          port: state.port,
+          udp: state.udp
+        )
+
+      Logger.debug("tracker #{url}: #{inspect(outcome |> announce_summary())}")
+      outcome
     end
 
     case Announcer.announce_all(urls, query, timeout: state.announce_timeout) do
-      {:ok, %{peers: peers}} -> peers
-      {:error, _} -> []
+      {:ok, %{peers: peers}} ->
+        Logger.debug("announce for #{entry.id}: #{length(peers)} peers")
+        peers
+
+      {:error, _} ->
+        []
     end
   end
+
+  defp announce_summary({:ok, %{peers: peers}}), do: "#{length(peers)} peers"
+  defp announce_summary({:error, reason}), do: "failed: #{inspect(reason)}"
 
   # -- lifecycle ---------------------------------------------------------
 
@@ -396,16 +450,25 @@ defmodule TorrentClient.Session do
   # Validate every target before deleting any: a path that no longer
   # resolves inside the download dir aborts the whole removal.
   defp remove_entry(state, raw, entry, opts) do
-    with {:ok, files} <- layout_files(entry.base_dir, entry.info) do
-      targets = [Disk.resume_path(entry.base_dir) | files]
+    case layout_files(entry.base_dir, entry.info) do
+      {:ok, files} ->
+        targets = [Disk.resume_path(entry.base_dir) | files]
+        delete_targets(state, raw, entry, targets, opts)
 
-      if Keyword.get(opts, :dry_run, false) do
-        {:ok, targets, state}
-      else
-        stop_sup(state, entry)
-        Enum.each(targets, &delete_path(state, &1))
-        {:ok, targets, %{state | torrents: Map.delete(state.torrents, raw)}}
-      end
+      {:error, _} = err ->
+        Logger.error("remove failed #{entry.id}: #{inspect(err)}")
+        err
+    end
+  end
+
+  defp delete_targets(state, _raw, entry, targets, opts) do
+    if Keyword.get(opts, :dry_run, false) do
+      {:ok, targets, state}
+    else
+      stop_sup(state, entry)
+      Enum.each(targets, &delete_path(state, &1))
+      Logger.info("removed #{entry.id} (#{length(targets)} files)")
+      {:ok, targets, %{state | torrents: Map.delete(state.torrents, entry.raw)}}
     end
   end
 

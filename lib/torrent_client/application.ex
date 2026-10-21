@@ -10,8 +10,12 @@ defmodule TorrentClient.Application do
 
   use Application
 
+  require Logger
+
   @impl true
   def start(_type, _args) do
+    install_log_file()
+
     children = [
       Supervisor.child_spec(
         {Registry, keys: :unique, name: TorrentClient.Registry},
@@ -28,5 +32,22 @@ defmodule TorrentClient.Application do
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: __MODULE__)
+  end
+
+  # Debug-and-up file log for post-mortems; nil disables it (tests).
+  defp install_log_file do
+    case Application.get_env(:torrent_client, :log_file, "log/torrent_client.log") do
+      nil ->
+        :ok
+
+      path ->
+        case TorrentClient.Log.setup(path) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning("Could not open log file #{path}: #{inspect(reason)}")
+        end
+    end
   end
 end

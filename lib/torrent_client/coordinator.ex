@@ -274,6 +274,7 @@ defmodule TorrentClient.Coordinator do
 
     case refill.() do
       peers when is_list(peers) and peers != [] ->
+        Logger.debug("swarm refill: #{length(peers)} fresh peers")
         known = MapSet.new(state.peers, &peer_key/1)
         fresh = Enum.reject(peers, &(peer_key(&1) in known))
         state = %{state | peers: state.peers ++ fresh}
@@ -445,6 +446,8 @@ defmodule TorrentClient.Coordinator do
   # before reporting), then the staged resume file renames over the old
   # one. A failed save only logs — the download itself is unaffected.
   defp save_resume(state) do
+    verified = MapSet.size(state.download.verified)
+
     with plen when is_integer(plen) and plen > 0 <- piece_length(state.info),
          {:ok, bytes} <-
            TorrentClient.Disk.encode_resume(%{
@@ -456,6 +459,7 @@ defmodule TorrentClient.Coordinator do
          path = TorrentClient.Disk.resume_path(state.base_dir),
          :ok <- state.disk.write(path <> ".tmp", bytes),
          :ok <- state.disk.rename(path <> ".tmp", path) do
+      Logger.debug("resume saved: #{verified}/#{state.total} verified")
       :ok
     else
       _ -> Logger.warning("Could not persist resume state")

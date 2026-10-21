@@ -7,6 +7,8 @@ defmodule TorrentClient.SessionTest do
   """
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias TorrentClient.{Disk, Session}
 
   import TorrentSeeds,
@@ -178,6 +180,20 @@ defmodule TorrentClient.SessionTest do
     assert %{status: :exhausted} = await_status(session, id, :exhausted, 5_000)
   end
 
+  test "lifecycle transitions are logged", %{session: session, tmp: tmp} do
+    {path, _info, _data} = craft(tmp, "logged", 1)
+    base = Path.join(tmp, "logged")
+
+    log =
+      capture_log(fn ->
+        {:ok, id} = Session.add_torrent(path, [base_dir: base, peers: [blackhole()]], session)
+        assert {:ok, ^id} = Session.pause(id, session)
+      end)
+
+    assert log =~ "added"
+    assert log =~ "paused"
+  end
+
   test "garbage and foreign resume bytes are ignored", %{session: session, tmp: tmp} do
     {path, raw_info, data} = craft(tmp, "g", 1)
     base = Path.join(tmp, "g")
@@ -209,6 +225,22 @@ defmodule TorrentClient.SessionTest do
              )
 
     await_status(session, id2, :complete)
+
+    # A directory at the resume path fails the read itself: foreign
+    # dotfiles must not break the add either.
+    {path3, raw_info3, data3} = craft(tmp, "g3", 1)
+    base3 = Path.join(tmp, "g3")
+    File.mkdir_p!(base3)
+    File.mkdir_p!(Disk.resume_path(base3))
+
+    assert {:ok, id3} =
+             Session.add_torrent(
+               path3,
+               [base_dir: base3, peers: [seed_for(raw_info3, data3)]],
+               session
+             )
+
+    await_status(session, id3, :complete)
   end
 
   # -- ports -----------------------------------------------------------------
@@ -256,10 +288,11 @@ defmodule TorrentClient.SessionTest do
     assert [%{status: :complete}] = Session.status(session)
   end
 
-  # Residue: the remove_entry layout-failure arm (`{:error, _} -> err`) is
-  # uncovered on purpose — entries always carry a valid bento.info, so
-  # Torrent.layout/1 cannot fail here; the arm is fail-closed insurance
-  # against deleting blind if that invariant ever breaks.
+  # Residue: the remove layout-failure arms (handler reply plus entry
+  # log) are uncovered on purpose — entries always carry a valid
+  # bento.info, so Torrent.layout/1 cannot fail here; the arms are
+  # fail-closed insurance against deleting blind if that invariant
+  # ever breaks.
   test "remove deletes layout files and resume but keeps strangers", %{session: session, tmp: tmp} do
     {path, raw_info, data} = craft(tmp, "x", 1)
     base = Path.join(tmp, "x")
