@@ -203,6 +203,35 @@ defmodule Mix.Tasks.TorrentTest do
     assert {:ok, _} = Session.forget(id2)
   end
 
+  test "log level flag controls the console handler" do
+    on_exit(fn -> :ok = :logger.set_handler_config(:default, :level, :debug) end)
+
+    {path, _info, _data} = craft(tmp(), "loglvl", 1)
+    capture_io(fn -> @task.run(["--log-level", "error", "parse", path]) end)
+    assert {:ok, %{level: :error}} = :logger.get_handler_config(:default)
+
+    capture_io(fn -> @task.run(["--log-level=warning", "parse", path]) end)
+    assert {:ok, %{level: :warning}} = :logger.get_handler_config(:default)
+
+    capture_io(fn -> @task.run(["parse", path]) end)
+    assert {:ok, %{level: :info}} = :logger.get_handler_config(:default)
+
+    assert_raise Mix.Error, ~r/--log-level must be one of/, fn ->
+      @task.run(["--log-level", "verbose", "parse", path])
+    end
+
+    assert_raise Mix.Error, ~r/--log-level must be one of/, fn ->
+      @task.run(["--log-level"])
+    end
+  end
+
+  defp tmp do
+    dir = Path.join(System.tmp_dir(), "kog10-cli-log-#{:erlang.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    dir
+  end
+
   test "remove of an unknown torrent raises" do
     assert_raise Mix.Error, ~r/not_found/, fn -> @task.run(["remove", "nope", "--yes"]) end
     assert_raise Mix.Error, ~r/usage/, fn -> @task.run(["remove"]) end

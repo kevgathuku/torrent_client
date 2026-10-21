@@ -13,6 +13,12 @@ defmodule Mix.Tasks.Torrent do
       mix torrent forget ID_OR_PATH
       mix torrent remove ID_OR_PATH [--yes] [--dry-run]
 
+  Prepend `--log-level <debug|info|warning|error>` (or `--log-level=<lvl>`)
+  to any command to set the console log level; it defaults to `info`.
+  The file log always records debug-and-up regardless of the flag, e.g.
+  `mix torrent --log-level debug download path/to/file.torrent` narrates
+  per-tracker announce outcomes on the console too.
+
   Addressing is exact hex id first, unique id prefix second, torrent
   path third. `remove` prompts before deleting data, defaulting to keep
   a complete torrent's files and delete an incomplete one's; `--yes`
@@ -26,18 +32,58 @@ defmodule Mix.Tasks.Torrent do
 
   alias TorrentClient.Session
 
+  @log_levels ~w(debug info warning error)
+
   @impl true
-  def run([]),
+  def run(argv) do
+    {level, argv} = pop_log_level(argv)
+    set_console_level(level)
+    dispatch(argv)
+  end
+
+  defp dispatch([]),
     do: Mix.raise("usage: mix torrent (parse|download|status|pause|resume|forget|remove) ...")
 
-  def run(["parse" | args]), do: parse(args)
-  def run(["download" | args]), do: download(args)
-  def run(["status" | args]), do: status(args)
-  def run(["pause" | args]), do: control(:pause, args)
-  def run(["resume" | args]), do: control(:resume, args)
-  def run(["forget" | args]), do: control(:forget, args)
-  def run(["remove" | args]), do: remove(args)
-  def run([verb | _]), do: Mix.raise("unknown torrent command: #{verb}")
+  defp dispatch(["parse" | args]), do: parse(args)
+  defp dispatch(["download" | args]), do: download(args)
+  defp dispatch(["status" | args]), do: status(args)
+  defp dispatch(["pause" | args]), do: control(:pause, args)
+  defp dispatch(["resume" | args]), do: control(:resume, args)
+  defp dispatch(["forget" | args]), do: control(:forget, args)
+  defp dispatch(["remove" | args]), do: remove(args)
+  defp dispatch([verb | _]), do: Mix.raise("unknown torrent command: #{verb}")
+
+  # Global flag, accepted anywhere in the argv: `--log-level LVL` or
+  # `--log-level=LVL`. The console defaults to info; the file log is
+  # always debug-and-up (see TorrentClient.Log).
+  defp pop_log_level(argv) do
+    idx =
+      Enum.find_index(argv, &(&1 == "--log-level" or String.starts_with?(&1, "--log-level=")))
+
+    case idx do
+      nil ->
+        {"info", argv}
+
+      i ->
+        case Enum.at(argv, i) do
+          "--log-level" ->
+            {Enum.at(argv, i + 1), argv |> List.delete_at(i) |> List.delete_at(i)}
+
+          prefixed ->
+            {String.replace_prefix(prefixed, "--log-level=", ""), List.delete_at(argv, i)}
+        end
+    end
+  end
+
+  defp set_console_level(level) when level in @log_levels do
+    :ok = :logger.set_handler_config(:default, :level, String.to_existing_atom(level))
+  end
+
+  defp set_console_level(level) do
+    Mix.raise(
+      "--log-level must be one of #{Enum.join(@log_levels, ", ")}, got: #{inspect(level)}"
+    )
+  end
 
   # -- commands ----------------------------------------------------------
 

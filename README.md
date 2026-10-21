@@ -104,8 +104,9 @@ fallback, distrusted resume bytes, failed resume save), `error` for
 failed operations.
 
 A debug-and-up file log lands at `log/torrent_client.log` (level-tagged
-lines for post-mortems); the console keeps its own level. Disable or
-relocate it with app config:
+lines for post-mortems); the console keeps its own level, controlled per
+invocation with `mix torrent --log-level <debug|info|warning|error>`
+(default `info`). Disable or relocate the file with app config:
 
 ```elixir
 # config/config.exs
