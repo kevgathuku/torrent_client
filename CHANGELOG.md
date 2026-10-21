@@ -13,6 +13,7 @@ in `.agents/skills/` and are not tracked here.)
 - Pure peer posture state with choke/interest transitions and a bitfield-to-index-set seam.
 - Trust-boundary validators: tracker announce tiers, block-size bounds, path confinement, byte-identical re-encode fidelity per fixture.
 - UDP tracker announces (BEP-15 codec, transport seam, supervised interval re-announcer with tier failover and exponential backoff); dictionary-model HTTP peers.
+- Supervised peer worker: unnamed one-piece GenServer (handshake, bitfield, interest, choked-until-unchoked 16 KiB block requests, hash verify, disk write) under a bounded-intensity one-for-one supervisor; replaces the named singleton client.
 - HTTP announces carry event/key parameters, honor tracker re-announce intervals, and fail closed on malformed bodies — at parity with the UDP path.
 
 ### Fixed

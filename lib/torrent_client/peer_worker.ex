@@ -1,0 +1,319 @@
+defmodule TorrentClient.PeerWorker do
+  @moduledoc """
+  Unnamed peer GenServer: downloads one assigned piece over the BEP-3 wire.
+
+  Owned one-for-one by `TorrentClient.PeerSupervisor`; never registered, so
+  many workers share one node. The worker performs no retries itself — any
+  connect, handshake, or protocol failure stops the process and the
+  supervisor decides (transient child: abnormal exits restart bounded by the
+  supervisor's intensity, `:normal` completion never restarts).
+
+  Wire posture, per the ticket: assume choked until unchoked (requests go
+  out only while unchoked), send `Interested` + `Unchoke` once the handshake
+  completes, then request the piece in 16 KiB blocks, verify the SHA1, and
+  persist via the disk seam. Interleaved `Have`/`Bitfield`/`Choke` update
+  the `PeerState`; anything malformed is an error stop, never a crash.
+  """
+
+  use GenServer
+
+  require Logger
+
+  alias PeerMessage.{
+    Bitfield,
+    Cancel,
+    Choke,
+    Have,
+    Interested,
+    KeepAlive,
+    NotInterested,
+    Piece,
+    Request,
+    Unchoke
+  }
+
+  @block_size 16_384
+  @handshake_size 68
+  @recv_timeout 10_000
+
+  @doc """
+  Start an unnamed worker downloading `piece_index` from `peer`.
+
+  Required opts: `:peer`, `:info_hash` (20-byte binary), `:peer_id`
+  (20-byte binary), `:info` (torrent info map), `:piece_index`,
+  `:piece_hash` (20-byte expected SHA1), `:base_dir`. Seams: `:network`
+  (default `TorrentClient.Network`), `:disk` (default
+  `TorrentClient.Disk`), `:sock` (default
+  `TorrentClient.GenTcpSocket`, implementing
+  `TorrentClient.SocketBehaviour`), `:recv_timeout` ms (default
+  #{@recv_timeout}).
+  """
+  def start_link(opts) do
+    GenServer.start_link(__MODULE__, opts)
+  end
+
+  # Transient: `:normal` completion never restarts; abnormal exits restart
+  # via the supervisor, bounded by its intensity.
+  def child_spec(opts) do
+    %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}, restart: :transient}
+  end
+
+  @impl true
+  def init(opts) do
+    state = %{
+      peer: Keyword.fetch!(opts, :peer),
+      info_hash: Keyword.fetch!(opts, :info_hash),
+      peer_id: Keyword.fetch!(opts, :peer_id),
+      info: Keyword.fetch!(opts, :info),
+      piece_index: Keyword.fetch!(opts, :piece_index),
+      piece_hash: Keyword.fetch!(opts, :piece_hash),
+      base_dir: Keyword.fetch!(opts, :base_dir),
+      network: Keyword.get(opts, :network, TorrentClient.Network),
+      disk: Keyword.get(opts, :disk, TorrentClient.Disk),
+      sock: Keyword.get(opts, :sock, TorrentClient.GenTcpSocket),
+      recv_timeout: Keyword.get(opts, :recv_timeout, @recv_timeout),
+      socket: nil,
+      peer_state: PeerState.init(),
+      bitfield_seen: false,
+      blocks: [],
+      pending: nil,
+      received: %{}
+    }
+
+    case Torrent.piece_span(state.info, state.piece_index) do
+      {:ok, {_offset, size}} ->
+        {:ok, %{state | blocks: split_blocks(size)}, {:continue, :connect}}
+
+      {:error, _} ->
+        {:stop, :invalid_piece}
+    end
+  end
+
+  @impl true
+  def handle_continue(:connect, state) do
+    case state.network.connect(state.peer) do
+      {:ok, socket} ->
+        state = %{state | socket: socket}
+
+        case handshake(state) do
+          :ok -> serve(state)
+          {:error, reason} -> {:stop, reason, state}
+        end
+
+      {:error, reason} ->
+        {:stop, {:connect_failed, reason}, state}
+    end
+  end
+
+  # The socket dies with the worker, but an explicit close keeps restarts
+  # from stacking duplicate connections on the crash path.
+  @impl true
+  def terminate(_reason, %{socket: socket, sock: sock}) when is_port(socket),
+    do: sock.close(socket)
+
+  def terminate(_reason, _state), do: :ok
+
+  defp split_blocks(size) do
+    for begin <- Range.new(0, size - 1, @block_size) do
+      {begin, min(@block_size, size - begin)}
+    end
+  end
+
+  # Full BEP-3 greeting: send our handshake, read theirs (exactly 68 bytes,
+  # so a co-segmented bitfield stays buffered), fail closed on mismatch,
+  # then announce interest and unchoke the peer.
+  defp handshake(state) do
+    out = Handshake.init(state.info_hash, state.peer_id) |> Handshake.serialize()
+    info_hash = state.info_hash
+
+    with :ok <- tcp_send(state.sock, state.socket, out),
+         {:ok, bytes} <- recv_exact(state.sock, state.socket, @handshake_size, state.recv_timeout),
+         {:ok, %Handshake{info_hash: ^info_hash}} <- safe_deserialize(bytes),
+         :ok <- send_message(state.sock, state.socket, %Interested{}),
+         :ok <- send_message(state.sock, state.socket, %Unchoke{}) do
+      :ok
+    else
+      {:ok, %Handshake{}} -> {:error, :info_hash_mismatch}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp safe_deserialize(bytes) do
+    Handshake.deserialize(bytes)
+  rescue
+    _ -> {:error, :bad_handshake}
+  end
+
+  # All worker-sent messages are statically valid (block splits cap
+  # request lengths), so encoding cannot fail: the match is an assertion.
+  defp send_message(sock, socket, message) do
+    {:ok, bytes} = PeerMessage.encode(message)
+    tcp_send(sock, socket, bytes)
+  end
+
+  # Loop: finish when every block is in, request only while unchoked, and
+  # stop normally when a seen bitfield proves the peer lacks our piece.
+  defp serve(state) do
+    cond do
+      complete?(state) -> verify_and_write(state)
+      known_missing?(state) -> {:stop, :normal, state}
+      sendable?(state) -> request_next(state)
+      true -> await_message(state)
+    end
+  end
+
+  defp known_missing?(state) do
+    state.bitfield_seen and state.pending == nil and next_block(state) != nil and
+      state.piece_index not in PeerState.available_indices(state.peer_state)
+  end
+
+  defp complete?(state) do
+    Enum.sum(Enum.map(state.received, fn {_begin, block} -> byte_size(block) end)) ==
+      piece_size(state) and piece_size(state) > 0
+  end
+
+  defp piece_size(state) do
+    Enum.sum(Enum.map(state.blocks, fn {_begin, length} -> length end))
+  end
+
+  defp sendable?(state) do
+    not state.peer_state.peer_choking and state.pending == nil and next_block(state) != nil and
+      peer_may_have?(state)
+  end
+
+  defp peer_may_have?(state) do
+    not state.bitfield_seen or
+      state.piece_index in PeerState.available_indices(state.peer_state)
+  end
+
+  defp next_block(state) do
+    Enum.find(state.blocks, fn {begin, _length} -> not Map.has_key?(state.received, begin) end)
+  end
+
+  # Only called when sendable? holds, so a next block exists and the peer
+  # may have it; the stop stays in serve/known_missing? above.
+  defp request_next(state) do
+    {begin, length} = next_block(state)
+    request = %Request{index: state.piece_index, begin: begin, length: length}
+
+    case send_message(state.sock, state.socket, request) do
+      :ok -> await_message(%{state | pending: {begin, length}})
+      {:error, reason} -> {:stop, reason, state}
+    end
+  end
+
+  defp await_message(state) do
+    case recv_message(state) do
+      {:ok, message} -> dispatch(state, message)
+      {:error, reason} -> {:stop, reason, state}
+    end
+  end
+
+  # Peer postures evolve the shared PeerState; requests for our bytes are
+  # ignored (kog.8 never serves uploads); pieces assemble below.
+  defp dispatch(state, %Piece{} = message), do: handle_piece(state, message)
+  defp dispatch(state, %Request{}), do: serve(state)
+  defp dispatch(state, %Cancel{}), do: serve(state)
+  defp dispatch(state, %KeepAlive{}), do: serve(state)
+  defp dispatch(state, message), do: handle_posture(track(state, message), message)
+
+  defp track(state, %Bitfield{}), do: %{state | bitfield_seen: true}
+  defp track(state, %Have{}), do: %{state | bitfield_seen: true}
+  defp track(state, _message), do: state
+
+  defp handle_posture(state, message) do
+    case PeerState.handle(state.peer_state, message) do
+      {:ok, peer_state} ->
+        # A fresh unchoke re-arms the in-flight block: peers may drop
+        # requests on choke, and a duplicate block is idempotent.
+        pending = if match?(%Unchoke{}, message), do: nil, else: state.pending
+        serve(%{state | peer_state: peer_state, pending: pending})
+
+      {:error, reason} ->
+        {:stop, reason, state}
+    end
+  end
+
+  # Only the exact requested slice is accepted: a short or overlapping
+  # block would poison the assembly and hang the worker on a sum that can
+  # never complete, so anything off-plan is a protocol error stop.
+  defp handle_piece(state, %Piece{index: index, begin: begin, block: block}) do
+    if index == state.piece_index and
+         List.keyfind(state.blocks, begin, 0) == {begin, byte_size(block)} and
+         Torrent.validate_block(state.info, index, begin, block) == :ok do
+      state = %{state | received: Map.put(state.received, begin, block)}
+      pending = if state.pending == {begin, byte_size(block)}, do: nil, else: state.pending
+      serve(%{state | pending: pending})
+    else
+      {:stop, :unexpected_piece, state}
+    end
+  end
+
+  defp verify_and_write(state) do
+    data = assemble(state)
+
+    if Torrent.verify_hash?(data, state.piece_hash) do
+      write_verified(state, data)
+    else
+      {:stop, :piece_mismatch, state}
+    end
+  end
+
+  defp assemble(state) do
+    state.received
+    |> Enum.sort_by(fn {begin, _block} -> begin end)
+    |> Enum.map_join("", &elem(&1, 1))
+  end
+
+  defp write_verified(state, data) do
+    case state.disk.write_piece(state.base_dir, state.info, state.piece_index, data) do
+      :ok ->
+        Logger.debug("Piece #{state.piece_index} verified and written")
+        {:stop, :normal, state}
+
+      {:error, reason} ->
+        {:stop, {:disk_error, reason}, state}
+    end
+  end
+
+  defp recv_message(state) do
+    with {:ok, <<length::32-big>>} <- recv_exact(state.sock, state.socket, 4, state.recv_timeout) do
+      if length == 0 do
+        {:ok, %KeepAlive{}}
+      else
+        recv_payload(state, length)
+      end
+    end
+  end
+
+  # Exact framing: payload holds precisely one message, so the decoded
+  # rest is always empty and any error is fail-closed.
+  defp recv_payload(state, length) do
+    with {:ok, payload} <- recv_exact(state.sock, state.socket, length, state.recv_timeout),
+         {:ok, message, _rest} <- PeerMessage.decode(<<length::32-big, payload::binary>>) do
+      {:ok, message}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp recv_exact(sock, socket, count, timeout) do
+    case sock.recv(socket, count, timeout) do
+      {:ok, data} -> {:ok, data}
+      {:error, :timeout} -> {:error, :peer_timeout}
+      {:error, :closed} -> {:error, :peer_closed}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # A dead socket raises instead of answering: fail closed so the
+  # supervisor restarts with a fresh connection.
+  defp tcp_send(sock, socket, bytes) do
+    case sock.send(socket, bytes) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:send_failed, reason}}
+    end
+  rescue
+    _ -> {:error, {:send_failed, :badarg}}
+  end
+end

@@ -1,4 +1,8 @@
 defmodule Handshake do
+  @moduledoc """
+  BEP-3 handshake codec: 68-byte greeting with the peer's info-hash.
+  """
+
   @protocol "BitTorrent Protocol"
   @capabilities <<0, 0, 0, 0, 0, 0, 0, 0>>
 

@@ -40,7 +40,24 @@ Peers are fetched on init over HTTP; UDP and multi-tier announces live in `Torre
 
 Stop the server with `Downloader.stop(pid)`.
 
-4. #pending Download pieces from peers (supervised peer worker — kog.8)
+4. Download pieces from peers (supervised peer worker)
+```elixir
+{:ok, sup} = TorrentClient.PeerSupervisor.start_link()
+{:ok, worker} = TorrentClient.PeerSupervisor.start_peer(sup,
+  peer: hd(peers),
+  info_hash: Base.decode16!(info_hash),
+  peer_id: Utils.generate_peer_id(),
+  info: bento.info,
+  piece_index: 0,
+  piece_hash: hd(Torrent.get_piece_hashes(bento)),
+  base_dir: "/downloads"
+)
+```
+The worker is unnamed, so many share one supervisor. It handshakes, sends
+interest plus unchoke, requests the piece in 16 KiB blocks while unchoked,
+verifies the SHA1, and writes through the disk seam — then exits `:normal`
+(which never restarts). Any failure stops fail-closed and the supervisor
+restarts it, bounded by its intensity.
 
 5. #pending Coordinate verified writes to disk with watchdog re-requests (per-torrent coordinator — kog.9)
 

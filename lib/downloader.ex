@@ -80,10 +80,9 @@ defmodule Downloader do
       Tracker.tracker_url(bento_torrent.announce, bento_torrent, info_hash, peer_id, port)
 
     case RequestsClient.get_peers(tracker_url) do
-      # TODO: also match on the interval and store it
-      {:ok, %{peers: peers}} ->
+      {:ok, %{peers: peers, interval: interval}} ->
         Logger.info("Found Peers: #{Enum.count(peers)}")
-        {:noreply, Map.put(state, :peers, peers)}
+        {:noreply, state |> Map.put(:peers, peers) |> Map.put(:interval, interval)}
 
       {:error, reason} ->
         Logger.error("Get Peers Error: #{reason}")
@@ -91,42 +90,8 @@ defmodule Downloader do
     end
   end
 
-  @impl true
-  def handle_cast(
-        :start_peer_clients,
-        %{peers: peers, peer_id: peer_id, own_torrent: own_torrent} = state
-      ) do
-    peers_with_pids =
-      peers
-      |> Enum.map(fn peer ->
-        # TODO: Does the Client need to be started with supervision???
-        case Client.start_link(own_torrent, peer, peer_id) do
-          {:ok, pid} ->
-            # TODO: Maybe these are the only peers that should be added to the state?
-            %{peer | pid: pid}
-
-          :ignore ->
-            peer
-
-          {:error, _} ->
-            peer
-        end
-      end)
-      |> Enum.reject(fn peer -> is_nil(peer.pid) end)
-
-    Logger.debug("Started client process for peers: #{Enum.count(peers_with_pids)}")
-
-    {:noreply, Map.put(state, :peers, peers_with_pids)}
-  end
-
-  @impl true
-  def handle_cast({:filter_peers, :handshake}, state) do
-    state.peers
-    |> Enum.each(fn peer -> Client.complete_handshake(peer.pid) end)
-
-    {:noreply, state}
-  end
-
+  # Peer wiring moved to TorrentClient.PeerSupervisor + PeerWorker (kog.8);
+  # the per-torrent coordinator owns worker startup (kog.9).
   @impl true
   def handle_cast({:filter_peers, :alive}, state) do
     handshaked_peers =
