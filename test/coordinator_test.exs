@@ -767,18 +767,22 @@ defmodule CoordinatorTest do
       gain_loop(listen1, ctx, data, has_zero, parent, port1)
     end)
 
-    spawn(fn ->
-      {:ok, sock} = :gen_tcp.accept(listen2, 5_000)
-      seed_greet(sock, ctx.info_hash, <<0b01000000>>)
-      serve_all(sock, data)
-    end)
+    # Accept loop, not a single accept: watchdog restarts and retries
+    # redial peers, and a served-once seed would starve the redial into
+    # timeouts, a skip, and a false exhausted. Every connection gets the
+    # same no-piece-0 bitfield; only p1 ever gains piece 0 (via Have).
+    spawn(fn -> gain_peer_loop(listen2, ctx, data) end)
 
     peers = [
       %Peer{ip_tuple: {127, 0, 0, 1}, port: port1},
       %Peer{ip_tuple: {127, 0, 0, 1}, port: port2}
     ]
 
-    start_sup_unlinked(coord_opts(ctx, peers: peers, info: info, piece_hashes: hashes))
+    # Generous recv budget: loaded runners stall handshakes, and a
+    # stall must cost a retry here, not one of the three skip strikes.
+    start_sup_unlinked(
+      coord_opts(ctx, peers: peers, info: info, piece_hashes: hashes, recv_timeout: 10_000)
+    )
 
     pid = coord_pid(ctx.info_hash)
     ref = Process.monitor(pid)
@@ -790,11 +794,26 @@ defmodule CoordinatorTest do
     assert {:ok, Enum.at(data, 2)} == Disk.read_piece(ctx.base, info, 2)
   end
 
+  defp gain_peer_loop(listen, ctx, data) do
+    case :gen_tcp.accept(listen, 15_000) do
+      {:ok, sock} ->
+        spawn(fn ->
+          seed_greet(sock, ctx.info_hash, <<0b01000000>>)
+          serve_all(sock, data)
+        end)
+
+        gain_peer_loop(listen, ctx, data)
+
+      {:error, _} ->
+        :ok
+    end
+  end
+
   # Serves every request instantly. The bitfield reflects whether the
   # peer has gained piece 0 yet; mid-download Have announcements
   # exercise the coordinator's missing-cleared path.
   defp gain_loop(listen, ctx, data, has_zero, parent, port) do
-    case :gen_tcp.accept(listen, 5_000) do
+    case :gen_tcp.accept(listen, 15_000) do
       {:ok, sock} ->
         send(parent, {:accepted, port})
 
