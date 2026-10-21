@@ -223,6 +223,45 @@ defmodule TorrentTest do
     end
   end
 
+  describe "url_list/1" do
+    test "reads list, bare-string, and missing url-list from torrent bytes" do
+      {:ok, debian} = File.read(TestHelpers.single_file_torrent())
+
+      assert Torrent.url_list(debian) == [
+               "https://cdimage.debian.org/cdimage/release/12.1.0/amd64/iso-cd/debian-12.1.0-amd64-netinst.iso",
+               "https://cdimage.debian.org/cdimage/archive/12.1.0/amd64/iso-cd/debian-12.1.0-amd64-netinst.iso"
+             ]
+
+      {:ok, bbb} = File.read(TestHelpers.multi_file_torrent())
+      assert Torrent.url_list(bbb) == ["https://webtorrent.io/torrents/"]
+
+      {:ok, manjaro} = File.read("test/_data/manjaro-gnome-17.1.9-stable-x86_64.torrent")
+
+      assert Torrent.url_list(manjaro) == [
+               "https://osdn.net/dl/manjaro/manjaro-gnome-17.1.9-stable-x86_64.iso"
+             ]
+
+      {:ok, ubuntu} = File.read("test/_data/ubuntu-22.04.2-desktop-amd64.iso.torrent")
+      assert Torrent.url_list(ubuntu) == []
+    end
+
+    test "bento structs drop url-list, so structs read empty" do
+      {:ok, bento, _info} = TestHelpers.parse_torrent(TestHelpers.single_file_torrent())
+      assert Torrent.url_list(bento) == []
+    end
+
+    test "raw maps accept string and atom keys, dropping non-binaries" do
+      assert Torrent.url_list(%{"url-list" => "https://x/y"}) == ["https://x/y"]
+
+      assert Torrent.url_list(%{"url-list" => ["https://a", 7, nil]}) == ["https://a"]
+      assert Torrent.url_list(%{:"url-list" => ["https://a"]}) == ["https://a"]
+      assert Torrent.url_list(%{"url-list" => 7}) == []
+      assert Torrent.url_list(%{}) == []
+      assert Torrent.url_list("nope") == []
+      assert Torrent.url_list(nil) == []
+    end
+  end
+
   describe "piece_span/2 and split_span/3" do
     test "last piece may be short" do
       info = %{:"piece length" => 4, name: "f.bin", length: 10}

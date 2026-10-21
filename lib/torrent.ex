@@ -43,6 +43,35 @@ defmodule Torrent do
   end
 
   @doc """
+  Webseed base URLs from the top-level `url-list` (BEP-19). Accepts raw
+  torrent bytes (decoded here, since bento structs drop the key), a raw
+  string-keyed decoded map, or an atom-keyed map. A bare string and a
+  list of strings both normalize to a list; anything else (missing,
+  non-binary entries, undecodable bytes) reads as no webseeds rather
+  than failing the load. Scheme filtering stays with the fetcher.
+  """
+  def url_list(bytes) when is_binary(bytes) do
+    case Bento.decode(bytes) do
+      {:ok, decoded} when is_map(decoded) -> url_list(decoded)
+      _ -> []
+    end
+  end
+
+  def url_list(%_{} = _struct), do: []
+
+  def url_list(map) when is_map(map) do
+    raw = Map.get(map, "url-list", Map.get(map, :"url-list"))
+
+    case raw do
+      url when is_binary(url) -> [url]
+      urls when is_list(urls) -> Enum.filter(urls, &is_binary/1)
+      _ -> []
+    end
+  end
+
+  def url_list(_), do: []
+
+  @doc """
   True when a block write fits the torrent's declared sizes: the piece
   exists, the data is non-empty, and begin+size stays inside the piece
   (the last piece may be short). Stale state must never survive a write.

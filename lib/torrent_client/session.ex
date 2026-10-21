@@ -111,7 +111,8 @@ defmodule TorrentClient.Session do
            :max_inflight,
            :recv_timeout,
            :piece_timeout,
-           :watchdog_timeout
+           :watchdog_timeout,
+           :webseed_http
          ])
      }}
   end
@@ -289,6 +290,7 @@ defmodule TorrentClient.Session do
         info: bento.info,
         bento: bento,
         peers: static_peers,
+        webseed_urls: Torrent.url_list(bytes),
         announce_timeout: Keyword.get(opts, :announce_timeout, state.announce_timeout),
         sup: nil,
         status: :downloading
@@ -303,9 +305,10 @@ defmodule TorrentClient.Session do
     end
   end
 
-  # No peers anywhere (static or announced) is not a failed add: the
-  # entry waits exhausted until resume re-announces into a live swarm.
-  defp start_subtree(state, entry, %{peers: []}) do
+  # No peers anywhere (static or announced) and no webseed URLs is not
+  # a failed add: the entry waits exhausted until resume re-announces
+  # into a live swarm. Webseeds alone still start a coordinator.
+  defp start_subtree(state, %{webseed_urls: []} = entry, %{peers: []}) do
     {:ok, entry.id, put_in(state.torrents[entry.raw], %{entry | status: :exhausted})}
   end
 
@@ -321,6 +324,7 @@ defmodule TorrentClient.Session do
           peers: torrent.peers,
           verified: torrent.verified,
           report_to: self(),
+          webseed_urls: entry.webseed_urls,
           refill_peers: refill_fun(state, entry)
         ]
 

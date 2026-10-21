@@ -37,7 +37,7 @@ defmodule TorrentClient.Coordinator do
 
   require Logger
 
-  alias TorrentClient.PeerWorker
+  alias TorrentClient.{PeerWorker, WebseedWorker}
 
   @default_max_peers 4
   @default_max_inflight 5
@@ -52,7 +52,10 @@ defmodule TorrentClient.Coordinator do
   Optional: `:peers` (static peer list), `:peer_id`, `:report_to`,
   `:verified` (already-verified piece indices, seeded from resume bytes),
   `:refill_peers` (0-arity fun returning fresh `[%Peer{}]`; called once
-  when the swarm exhausts before giving up for real), `:max_peers`
+  when the swarm exhausts before giving up for real), `:webseed_urls`
+  (BEP-19 base URLs, last resort when no idle peer holds a piece; empty
+  disables), `:webseed_http` (default `TorrentClient.WebseedHttpClient`),
+  `:max_peers`
   (default #{@default_max_peers}), `:max_inflight`, `:watchdog_timeout`
   ms, `:max_stalls`, `:max_peer_failures`, `:recv_timeout`/
   `:piece_timeout` ms passed to workers, effect seams (`:network`,
@@ -101,6 +104,8 @@ defmodule TorrentClient.Coordinator do
       base_dir: Keyword.fetch!(opts, :base_dir),
       peer_id: Keyword.get(opts, :peer_id, Utils.generate_peer_id()),
       peers: Keyword.get(opts, :peers, []),
+      webseed_urls: Keyword.get(opts, :webseed_urls, []),
+      webseed_http: Keyword.get(opts, :webseed_http, TorrentClient.WebseedHttpClient),
       max_peers: Keyword.get(opts, :max_peers, @default_max_peers),
       max_inflight: Keyword.get(opts, :max_inflight, @default_max_inflight),
       watchdog_timeout: Keyword.get(opts, :watchdog_timeout, @default_watchdog_timeout),
@@ -352,8 +357,34 @@ defmodule TorrentClient.Coordinator do
         end
 
       {:error, _} ->
-        :none
+        webseed_fallback(state)
     end
+  end
+
+  # No peer-held piece is assignable (empty or exhausted swarm): offer
+  # the lowest still-needed piece to webseed. Peers always win above,
+  # so this only fires as a last resort; a lone `1` count marks the
+  # piece in flight through the shared assign path.
+  defp webseed_fallback(state) do
+    if state.webseed_urls == [] do
+      :none
+    else
+      needed =
+        state.download |> DownloadState.needed() |> MapSet.to_list() |> Enum.sort()
+
+      case Enum.find(needed, &webseed_eligible?(state, &1)) do
+        nil ->
+          :none
+
+        index ->
+          {:ok, _index, download} = DownloadState.assign(state.download, %{index => 1})
+          {:ok, {:webseed, index}, index, download}
+      end
+    end
+  end
+
+  defp webseed_eligible?(state, index) do
+    not MapSet.member?(state.skipped, {:webseed, index})
   end
 
   defp idle_peers(state) do
@@ -392,6 +423,29 @@ defmodule TorrentClient.Coordinator do
       |> Enum.split_with(&Map.has_key?(state.availability, peer_key(&1)))
 
     List.first(reported ++ unreported)
+  end
+
+  defp start_worker(state, {:webseed, _} = peer, index) do
+    opts = [
+      webseed_urls: state.webseed_urls,
+      info: state.info,
+      piece_index: index,
+      piece_hash: Enum.at(state.piece_hashes, index),
+      base_dir: state.base_dir,
+      http: state.webseed_http,
+      disk: state.disk,
+      report_to: self()
+    ]
+
+    case safe_start_child(state.sup, {WebseedWorker, opts}) do
+      {:ok, pid} ->
+        ref = Process.monitor(pid)
+        {:ok, put_in(state.workers[pid], %{peer: peer, index: index, ref: ref})}
+
+      {:error, reason} ->
+        Logger.warning("Coordinator could not start webseed worker: #{inspect(reason)}")
+        :error
+    end
   end
 
   defp start_worker(state, peer, index) do
@@ -600,6 +654,7 @@ defmodule TorrentClient.Coordinator do
   end
 
   defp peer_key(%Peer{ip_tuple: ip, port: port}), do: {ip, port}
+  defp peer_key({:webseed, index}), do: {:webseed, index}
 
   defp clock(opts), do: Keyword.get(opts, :clock, TorrentClient.Clock)
 end
