@@ -88,7 +88,8 @@ defmodule Tracker do
 
   defp parse_dict_peers(entries) do
     Enum.reduce_while(entries, {:ok, []}, fn
-      %{"ip" => ip, "port" => port}, {:ok, acc} when is_binary(ip) and is_integer(port) ->
+      %{"ip" => ip, "port" => port}, {:ok, acc}
+      when is_binary(ip) and port in 1..65_535 ->
         case Peer.parse_address(ip) do
           {:ok, tuple} -> {:cont, {:ok, [%Peer{ip_tuple: tuple, port: port} | acc]}}
           {:error, _} -> {:halt, {:error, :unparseable_peer_address}}

@@ -24,4 +24,4 @@ in `.agents/skills/` and are not tracked here.)
 
 - `info_hash` covers the full as-found info dict (was a `Map.take` subset, wrong swarm identity for torrents with extra keys); proven per fixture against raw info bytes.
 - Integration-test timing flake (assert_receive window too tight under load).
-- Tracker-supplied peers in loopback/unspecified/link-local/multicast ranges (IPv4 and IPv6, mapped forms judged by their embedded IPv4) are dropped before dialing; dictionary-model address text parses literally (dotted quad plus full, compressed, and mapped IPv6) and never triggers DNS resolution.
+- Tracker-supplied peers in loopback/unspecified/link-local/multicast ranges (IPv4 and IPv6, mapped forms judged by their embedded IPv4) are dropped before dialing; dictionary-model address text parses literally (dotted quad plus full, compressed, and mapped IPv6) and never triggers DNS resolution; dictionary-model ports outside 1..65535 are rejected.
