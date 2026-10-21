@@ -15,7 +15,7 @@ defmodule TrackerTest do
     case context do
       # If torrent_file_path is available in the context
       %{torrent_file: torrent_file} ->
-        {:ok, bento_torrent, info} = Downloader.parse_torrent_file(torrent_file)
+        {:ok, bento_torrent, info} = TestHelpers.parse_torrent(torrent_file)
         info_hash = Torrent.info_hash(info)
 
         tracker_url =
@@ -130,7 +130,7 @@ defmodule TrackerTest do
 
   describe "tracker_url encoding" do
     test "binary info_hash is percent-encoded byte-wise, never space-as-plus" do
-      {:ok, bento, _info} = TestHelpers.single_file_torrent() |> Downloader.parse_torrent_file()
+      {:ok, bento, _info} = TestHelpers.single_file_torrent() |> TestHelpers.parse_torrent()
       # 0x20 must become %20, not +
       url =
         Tracker.tracker_url(bento.announce, bento, Base.encode16(<<0x20, 0xFF>>), "peer", 6881)
@@ -140,7 +140,7 @@ defmodule TrackerTest do
     end
 
     test "event and key ride along when given" do
-      {:ok, bento, _info} = TestHelpers.single_file_torrent() |> Downloader.parse_torrent_file()
+      {:ok, bento, _info} = TestHelpers.single_file_torrent() |> TestHelpers.parse_torrent()
 
       url =
         Tracker.tracker_url(bento.announce, bento, Base.encode16(<<1>>), "peer", 6881,
@@ -153,7 +153,7 @@ defmodule TrackerTest do
     end
 
     test "event and key are absent by default" do
-      {:ok, bento, _info} = TestHelpers.single_file_torrent() |> Downloader.parse_torrent_file()
+      {:ok, bento, _info} = TestHelpers.single_file_torrent() |> TestHelpers.parse_torrent()
       url = Tracker.tracker_url(bento.announce, bento, Base.encode16(<<1>>), "peer", 6881)
 
       refute String.contains?(url, "event=")

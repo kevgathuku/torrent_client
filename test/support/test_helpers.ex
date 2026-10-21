@@ -11,4 +11,12 @@ defmodule TestHelpers do
   def multi_file_torrent do
     "test/_data/big-buck-bunny.torrent"
   end
+
+  # Read a .torrent file and parse it: file errors pass through, so
+  # missing-file tests keep asserting on the tuple.
+  def parse_torrent(path) do
+    with {:ok, bytes} <- File.read(path) do
+      Torrent.parse_bytes(bytes)
+    end
+  end
 end

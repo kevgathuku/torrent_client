@@ -21,6 +21,16 @@ defmodule TorrentClient.Disk do
   @impl true
   def write(path, data), do: File.write(path, data)
 
+  @impl true
+  def rename(from, to), do: File.rename(from, to)
+
+  @impl true
+  def delete(path), do: File.rm(path)
+
+  @doc "Resume file for a download dir (dotfile, colocated per torrent)."
+  @spec resume_path(Path.t()) :: Path.t()
+  def resume_path(base_dir), do: Path.join(base_dir, ".resume")
+
   @doc "Human-readable resume id from the torrent filename."
   @spec id_from_path(Path.t()) :: {:ok, String.t()} | {:error, :invalid_path}
   def id_from_path(path) when is_binary(path) do

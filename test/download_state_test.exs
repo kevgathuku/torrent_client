@@ -121,4 +121,22 @@ defmodule DownloadStateTest do
     state = DownloadState.note_progress(state, 10_000)
     refute DownloadState.stalled?(state, 10_050, 100)
   end
+
+  test "restore seeds verified pieces so they are never reassigned" do
+    state = DownloadState.init(3) |> DownloadState.restore([0, 2])
+    assert DownloadState.needed(state) == MapSet.new([1])
+    refute DownloadState.complete?(state)
+    assert {:ok, 1, _} = DownloadState.assign(state, %{})
+  end
+
+  test "restore of every piece reads complete" do
+    state = DownloadState.init(2) |> DownloadState.restore(MapSet.new([0, 1]))
+    assert DownloadState.complete?(state)
+    assert {:error, :complete} = DownloadState.assign(state, %{})
+  end
+
+  test "restore drops out-of-range indices from hostile resume bytes" do
+    state = DownloadState.init(2) |> DownloadState.restore([-1, 0, 2, 99])
+    assert DownloadState.needed(state) == MapSet.new([1])
+  end
 end

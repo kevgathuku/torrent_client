@@ -18,9 +18,11 @@ in `.agents/skills/` and are not tracked here.)
 - Bounded whole-announce fan-out: all trackers queried concurrently with peers merged as answers land (deduped, minimum interval kept); resolves within the timeout even when trackers black-hole.
 - HTTP announces carry event/key parameters, honor tracker re-announce intervals, and fail closed on malformed bodies — at parity with the UDP path.
 - Per-torrent coordinator: pure DownloadState plans rarest-first piece allocation, in-flight tracking, and endgame over worker reports (availability, block progress, completion); one supervised subtree per torrent with a stall watchdog (restarts stuck workers, gives up past the budget) and completion reporting; endgame duplicates race and the loser sends Cancel on first completion.
+- Multi-torrent session plus CLI: `mix torrent download` runs the whole pipeline (parse, layout, announce, download with resume) and many torrents run concurrently; `mix torrent` also offers parse, status, pause, resume, forget (drop from the session, keep files), and remove (prompt-first data deletion with completeness-aware defaults, `--yes`, `--dry-run`). Restarts resume from per-torrent `.resume` files without re-downloading verified pieces; addressing is exact id, unique prefix, or torrent path; the session picks its listen port at startup (explicit, config file, or free OS pick with occupied-port fallback).
 
 ### Fixed
 
+- Piece-hash slicing aligned to 20-byte boundaries past the first piece (every later piece verified against the wrong hash, so multi-piece downloads stalled on endless mismatches).
 - HTTP tracker URLs percent-encode binary fields byte-wise (was space-as-`+`, corrupting info-hashes containing `0x20`).
 
 - `info_hash` covers the full as-found info dict (was a `Map.take` subset, wrong swarm identity for torrents with extra keys); proven per fixture against raw info bytes.
