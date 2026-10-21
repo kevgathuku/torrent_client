@@ -1,17 +1,28 @@
 defmodule Utils do
-  @port_range 1..65535
+  @moduledoc """
+  Small shared helpers: peer ids, free ports, hashing, and fake peer bytes
+  for tests. No torrent logic lives here.
+  """
+
+  @port_range 1..65_535
   @ip_pool for n <- 1..254, do: <<192, 168, 1, n>>
 
   @doc """
   Generate a 20-character random string, to use as the peer id
   """
-  def generate_peer_id() do
+  def generate_peer_id do
     :crypto.strong_rand_bytes(20) |> Base.encode64() |> binary_part(0, 20)
   end
 
+  @doc """
+  Ask the OS for a free TCP port by binding port 0 and releasing it.
+  Best-effort: another process may claim the port before we bind it.
+  """
   def get_port do
-    # TODO: Improve to choose free port
-    Enum.random(6881..6889)
+    {:ok, socket} = :gen_tcp.listen(0, [])
+    {:ok, port} = :inet.port(socket)
+    :gen_tcp.close(socket)
+    port
   end
 
   def sha_sum(binary) do

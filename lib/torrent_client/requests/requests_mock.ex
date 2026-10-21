@@ -1,4 +1,8 @@
 defmodule TorrentClient.Requests.RequestsMock do
+  @moduledoc """
+  In-memory tracker double: answers every announce with five fake peers.
+  """
+
   @behaviour TorrentClient.Requests.RequestsBehaviour
 
   @impl true

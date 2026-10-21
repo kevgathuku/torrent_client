@@ -29,6 +29,16 @@ defmodule EffectBehavioursTest do
     assert TorrentClient.DiskMock.__info__(:functions)[:write_piece] == 4
   end
 
+  test "socket behaviour exposes framed send/recv/close" do
+    assert {:send, 2} in TorrentClient.SocketBehaviour.behaviour_info(:callbacks)
+    assert {:recv, 3} in TorrentClient.SocketBehaviour.behaviour_info(:callbacks)
+    assert {:close, 1} in TorrentClient.SocketBehaviour.behaviour_info(:callbacks)
+
+    assert TorrentClient.GenTcpSocket.__info__(:attributes)[:behaviour] == [
+             TorrentClient.SocketBehaviour
+           ]
+  end
+
   test "clock behaviour exposes monotonic_ms/0" do
     assert {:monotonic_ms, 0} in TorrentClient.ClockBehaviour.behaviour_info(:callbacks)
     assert TorrentClient.Clock.__info__(:attributes)[:behaviour] == [TorrentClient.ClockBehaviour]
