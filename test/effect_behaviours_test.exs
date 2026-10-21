@@ -16,11 +16,17 @@ defmodule EffectBehavioursTest do
     assert TorrentClient.NetworkMock.__info__(:functions)[:connect] == 1
   end
 
-  test "disk behaviour exposes read/1 and write/2" do
+  test "disk behaviour exposes piece storage and resume transport" do
     assert {:read, 1} in TorrentClient.DiskBehaviour.behaviour_info(:callbacks)
     assert {:write, 2} in TorrentClient.DiskBehaviour.behaviour_info(:callbacks)
+    assert {:init_layout, 2} in TorrentClient.DiskBehaviour.behaviour_info(:callbacks)
+    assert {:read_piece, 3} in TorrentClient.DiskBehaviour.behaviour_info(:callbacks)
+    assert {:write_piece, 4} in TorrentClient.DiskBehaviour.behaviour_info(:callbacks)
     assert TorrentClient.Disk.__info__(:attributes)[:behaviour] == [TorrentClient.DiskBehaviour]
     assert TorrentClient.DiskMock.__info__(:functions)[:read] == 1
+    assert TorrentClient.DiskMock.__info__(:functions)[:init_layout] == 2
+    assert TorrentClient.DiskMock.__info__(:functions)[:read_piece] == 3
+    assert TorrentClient.DiskMock.__info__(:functions)[:write_piece] == 4
   end
 
   test "clock behaviour exposes monotonic_ms/0" do

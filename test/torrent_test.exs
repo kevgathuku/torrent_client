@@ -174,4 +174,50 @@ defmodule TorrentTest do
       to_string([first | rest])
     end
   end
+
+  describe "layout/1" do
+    test "single-file info yields one entry at offset zero" do
+      info = %{:"piece length" => 4, name: "f.bin", length: 10}
+      assert Torrent.layout(info) == {:ok, [%{path: "f.bin", length: 10, offset: 0}]}
+    end
+
+    test "multi-file info yields cumulative offsets under the torrent dir" do
+      info = %{
+        :"piece length" => 5,
+        name: "t",
+        files: [%{path: ["a"], length: 6}, %{path: ["sub", "b"], length: 4}]
+      }
+
+      assert Torrent.layout(info) ==
+               {:ok,
+                [%{path: "t/a", length: 6, offset: 0}, %{path: "t/sub/b", length: 4, offset: 6}]}
+    end
+
+    test "rejects hostile and malformed info before any mkdir could run" do
+      escape = %{:"piece length" => 1, name: "t", files: [%{path: ["..", "evil"], length: 1}]}
+      assert {:error, _} = Torrent.layout(escape)
+      assert {:error, _} = Torrent.layout(%{})
+      assert {:error, _} = Torrent.layout(%{:"piece length" => 0, name: "f", length: 1})
+      assert {:error, _} = Torrent.layout(%{:"piece length" => 4, name: "..", length: 1})
+      assert {:error, _} = Torrent.layout(%{:"piece length" => 4, name: "x"})
+      assert {:error, _} = Torrent.layout("nope")
+    end
+  end
+
+  describe "piece_span/2 and split_span/3" do
+    test "last piece may be short" do
+      info = %{:"piece length" => 4, name: "f.bin", length: 10}
+      assert Torrent.piece_span(info, 0) == {:ok, {0, 4}}
+      assert Torrent.piece_span(info, 2) == {:ok, {8, 2}}
+      assert {:error, _} = Torrent.piece_span(info, 3)
+      assert {:error, _} = Torrent.piece_span(info, -1)
+      assert {:error, _} = Torrent.piece_span(%{}, 0)
+    end
+
+    test "split_span slices a span across entries" do
+      entries = [%{path: "a", length: 6, offset: 0}, %{path: "b", length: 6, offset: 6}]
+      assert Torrent.split_span(entries, 5, 5) == [{"a", 5, 1}, {"b", 0, 4}]
+      assert Torrent.split_span(entries, 0, 6) == [{"a", 0, 6}]
+    end
+  end
 end
