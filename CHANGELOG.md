@@ -12,8 +12,6 @@ in `.agents/skills/` and are not tracked here.)
 - BEP-3 peer wire codec: per-message structs, length-prefixed encode/decode with error envelopes, 16 KiB cap, IPv4/IPv6 compact parsing.
 - Pure peer posture state with choke/interest transitions and a bitfield-to-index-set seam.
 - Trust-boundary validators: tracker announce tiers, block-size bounds, path confinement, byte-identical re-encode fidelity per fixture.
-- Purity tripwire test over the domain files; mutation-rejection properties for fail-closed decoding.
-- 80% total coverage gate and `mix dialyzer` in the quality gates.
 
 ### Fixed
 
