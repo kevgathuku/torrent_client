@@ -63,7 +63,7 @@ defmodule Tracker do
     if Map.has_key?(decoded, "peers") or Map.has_key?(decoded, "peers6") do
       with {:ok, v4} <- parse_family(decoded, "peers", :ipv4),
            {:ok, v6} <- parse_family(decoded, "peers6", :ipv6) do
-        {:ok, v4 ++ v6}
+        {:ok, Peer.filter_usable(v4 ++ v6)}
       end
     else
       {:error, "Unknown response from tracker"}
@@ -89,7 +89,7 @@ defmodule Tracker do
   defp parse_dict_peers(entries) do
     Enum.reduce_while(entries, {:ok, []}, fn
       %{"ip" => ip, "port" => port}, {:ok, acc} when is_binary(ip) and is_integer(port) ->
-        case :inet.parse_address(String.to_charlist(ip)) do
+        case Peer.parse_address(ip) do
           {:ok, tuple} -> {:cont, {:ok, [%Peer{ip_tuple: tuple, port: port} | acc]}}
           {:error, _} -> {:halt, {:error, :unparseable_peer_address}}
         end
