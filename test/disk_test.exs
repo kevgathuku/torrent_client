@@ -183,6 +183,24 @@ defmodule DiskTest do
     assert {:ok, %File.Stat{type: :symlink}} = File.lstat(Path.join(base, "f.bin"))
   end
 
+  test "write_piece refuses a parent dir swapped for a symlink after init", %{base: base} do
+    info = multi_info()
+    assert Disk.init_layout(base, info) == :ok
+
+    # Deterministic plant strictly between two completed calls: not a race.
+    outside = Path.join(System.tmp_dir!(), "kog7-outside-#{:erlang.unique_integer([:positive])}")
+    File.mkdir_p!(outside)
+    on_exit(fn -> File.rm_rf!(outside) end)
+
+    sub = Path.join([base, "t", "sub"])
+    File.rm_rf!(sub)
+    File.ln_s!(outside, sub)
+
+    # Piece 1 spans f1 and sub/f2: must fail before touching outside.
+    assert Disk.write_piece(base, info, 1, <<5, 6, 7, 8, 9>>) == {:error, :symlink_escape}
+    assert File.ls!(outside) == []
+  end
+
   test "write_piece refuses a symlink at the file path", %{base: base} do
     info = single_info()
     assert Disk.init_layout(base, info) == :ok

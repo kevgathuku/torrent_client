@@ -54,8 +54,14 @@ defmodule TorrentClient.Disk do
   # dir. A concurrent plant still races (confined open needs openat2, which
   # has no OTP binding); this closes the deterministic path.
   defp reject_symlinks(base, entries) do
-    Enum.reduce_while(entries, :ok, fn entry, :ok ->
-      if symlinked_below?(base, Path.join(base, entry.path)) do
+    entries
+    |> Enum.map(&Path.join(base, &1.path))
+    |> then(&reject_paths(base, &1))
+  end
+
+  defp reject_paths(base, full_paths) do
+    Enum.reduce_while(full_paths, :ok, fn full, :ok ->
+      if symlinked_below?(base, full) do
         {:halt, {:error, :symlink_escape}}
       else
         {:cont, :ok}
@@ -223,10 +229,15 @@ defmodule TorrentClient.Disk do
   defp write_slices(base, [{rel, offset, len} | rest], data) do
     chunk = binary_part(data, 0, len)
     remaining = binary_part(data, len, byte_size(data) - len)
+    full = Path.join(base, rel)
 
-    case pwrite(Path.join(base, rel), offset, chunk) do
-      :ok -> write_slices(base, rest, remaining)
-      {:error, _} = err -> err
+    # Re-sweep per slice: a parent dir swapped for a symlink after init is
+    # a deterministic plant between two calls, not a concurrent race.
+    with :ok <- reject_paths(base, [full]) do
+      case pwrite(full, offset, chunk) do
+        :ok -> write_slices(base, rest, remaining)
+        {:error, _} = err -> err
+      end
     end
   end
 
