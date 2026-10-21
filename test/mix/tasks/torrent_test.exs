@@ -86,6 +86,21 @@ defmodule Mix.Tasks.TorrentTest do
     assert {:ok, _} = Session.forget(id)
   end
 
+  test "resume of an unknown torrent file falls back to download from disk resume", %{tmp: tmp} do
+    {path, raw_info, data} = craft(tmp, "rs", 1)
+    base = Path.join(tmp, "rs")
+    id = add_seeded(path, base, raw_info, data)
+    assert {:ok, _} = Session.forget(id)
+
+    # Fresh session, same files: resume re-adds and completes from the
+    # on-disk resume state instead of raising not_found.
+    output = capture_io(fn -> @task.run(["resume", path, "--dir", base]) end)
+    assert output =~ "complete #{id}"
+    assert {:ok, _} = Session.forget(id)
+
+    assert_raise Mix.Error, ~r/not_found/, fn -> @task.run(["resume", "nope"]) end
+  end
+
   test "pause, resume, and forget wire through addressing", %{tmp: tmp} do
     {path, _info, _data} = craft(tmp, "pr", 1)
     base = Path.join(tmp, "pr")

@@ -8,11 +8,23 @@ defmodule TorrentClient.SessionTest do
   use ExUnit.Case, async: false
 
   import ExUnit.CaptureLog
+  import Mox
+
+  setup :set_mox_global
+  setup :verify_on_exit!
 
   alias TorrentClient.{Disk, Session}
 
   import TorrentSeeds,
-    only: [craft: 3, craft: 4, seed_for: 2, blackhole: 0, await_status: 3, await_status: 4]
+    only: [
+      craft: 3,
+      craft: 4,
+      craft: 5,
+      seed_for: 2,
+      blackhole: 0,
+      await_status: 3,
+      await_status: 4
+    ]
 
   setup do
     sup = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
@@ -469,6 +481,53 @@ defmodule TorrentClient.SessionTest do
   test "non-binary addressing fails closed", %{session: session} do
     assert {:error, :not_found} = Session.pause(:atom, session)
     assert {:error, :not_found} = Session.forget(123, session)
+  end
+
+  test "webseed urls start a download with a dead swarm", %{sup: sup, tmp: tmp} do
+    test = self()
+    session = start_session(sup, webseed_http: TorrentClient.WebseedHttpMock)
+
+    {path, _info, [data]} =
+      craft(tmp, "w", 1, "http://127.0.0.1:9/announce", %{"url-list" => ["https://x/w.bin"]})
+
+    base = Path.join(tmp, "w")
+    {:ok, gate} = Agent.start_link(fn -> :closed end)
+
+    TorrentClient.WebseedHttpMock
+    |> expect(:get, fn "https://x/w.bin", [{"range", "bytes=0-16383"}] ->
+      send(test, :fetching)
+      wait_gate(gate, 250)
+      {:ok, %Tesla.Env{status: 206, body: data}}
+    end)
+
+    assert {:ok, id} = Session.add_torrent(path, [base_dir: base, peers: []], session)
+    # Webseed URLs alone keep the torrent out of exhausted...
+    assert_receive :fetching, 5_000
+    found = Enum.find(Session.status(session), &(&1.id == id))
+    assert found.status == :downloading
+
+    # ...and the fetched bytes verify through the normal piece path.
+    Agent.update(gate, fn _ -> :open end)
+    assert %{status: :complete} = TorrentSeeds.await_status(session, id, :complete)
+
+    info = %{
+      :"piece length" => TorrentSeeds.piece_length(),
+      name: "w.bin",
+      length: TorrentSeeds.piece_length()
+    }
+
+    assert {:ok, ^data} = Disk.read_piece(base, info, 0)
+  end
+
+  defp wait_gate(_gate, 0), do: flunk("webseed gate never opened")
+
+  defp wait_gate(gate, n) do
+    if Agent.get(gate, & &1) == :open do
+      :ok
+    else
+      Process.sleep(20)
+      wait_gate(gate, n - 1)
+    end
   end
 
   test "config file port is honored when free", %{sup: sup, tmp: tmp} do

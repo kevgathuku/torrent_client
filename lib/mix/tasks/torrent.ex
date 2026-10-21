@@ -20,7 +20,8 @@ defmodule Mix.Tasks.Torrent do
   per-tracker announce outcomes on the console too.
 
   Addressing is exact hex id first, unique id prefix second, torrent
-  path third. `remove` prompts before deleting data, defaulting to keep
+  path third. `resume` of a torrent file the session never saw re-adds
+  it, continuing from on-disk resume state. `remove` prompts before deleting data, defaulting to keep
   a complete torrent's files and delete an incomplete one's; `--yes`
   skips the prompt, `--dry-run` only lists what would go.
 
@@ -48,7 +49,7 @@ defmodule Mix.Tasks.Torrent do
   defp dispatch(["download" | args]), do: download(args)
   defp dispatch(["status" | args]), do: status(args)
   defp dispatch(["pause" | args]), do: control(:pause, args)
-  defp dispatch(["resume" | args]), do: control(:resume, args)
+  defp dispatch(["resume" | args]), do: resume(args)
   defp dispatch(["forget" | args]), do: control(:forget, args)
   defp dispatch(["remove" | args]), do: remove(args)
   defp dispatch([verb | _]), do: Mix.raise("unknown torrent command: #{verb}")
@@ -148,6 +149,31 @@ defmodule Mix.Tasks.Torrent do
     Enum.each(entries, fn entry ->
       Mix.shell().info("#{entry.id}  #{entry.status}  #{entry.path}  -> #{entry.base_dir}")
     end)
+  end
+
+  # Resume restarts a known entry; for a torrent the session never saw
+  # (fresh node after a kill, or a forgotten entry) it degrades to
+  # adding it, which loads the on-disk resume state and continues.
+  # Anything that is not a torrent file stays a not_found error.
+  defp resume([]), do: Mix.raise("usage: mix torrent resume ID_OR_PATH")
+
+  defp resume([id_or_path | _] = args) do
+    ensure_session()
+
+    case Session.resume(id_or_path) do
+      {:ok, id} ->
+        Mix.shell().info("resume #{id}")
+
+      {:error, :not_found} ->
+        if File.regular?(id_or_path) do
+          download(args)
+        else
+          Mix.raise("resume #{id_or_path}: :not_found")
+        end
+
+      {:error, reason} ->
+        Mix.raise("resume #{id_or_path}: #{inspect(reason)}")
+    end
   end
 
   defp control(action, args) do

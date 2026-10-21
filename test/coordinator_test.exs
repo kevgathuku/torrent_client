@@ -898,4 +898,156 @@ defmodule CoordinatorTest do
         :ok
     end
   end
+
+  # -- webseed fallback (BEP-19) ------------------------------------------------
+
+  defp webseed_opts(ctx, extra) do
+    coord_opts(
+      ctx,
+      Keyword.merge(
+        [peers: [], webseed_urls: ["https://x/"], webseed_http: TorrentClient.WebseedHttpMock],
+        extra
+      )
+    )
+  end
+
+  test "dead swarm completes through webseed", ctx do
+    [data0, data1] = ctx.data
+
+    # One order-independent expectation: the two piece workers race to
+    # the mock, so dispatch on the Range instead of relying on call order.
+    TorrentClient.WebseedHttpMock
+    |> expect(:get, 2, fn "https://x/c.bin", [{"range", range}] ->
+      body =
+        case range do
+          "bytes=0-32767" -> data0
+          "bytes=32768-65535" -> data1
+        end
+
+      {:ok, %Tesla.Env{status: 206, body: body}}
+    end)
+
+    start_sup_unlinked(webseed_opts(ctx, []))
+
+    pid = coord_pid(ctx.info_hash)
+    ref = Process.monitor(pid)
+
+    assert_receive {:torrent_complete, info_hash}, 15_000
+    assert info_hash == ctx.info_hash
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 15_000
+
+    assert {:ok, data0} == Disk.read_piece(ctx.base, ctx.info, 0)
+    assert {:ok, data1} == Disk.read_piece(ctx.base, ctx.info, 1)
+  end
+
+  test "webseed only fills pieces no peer holds", ctx do
+    parent = self()
+    {listen, port} = listen!()
+    [data0, data1] = ctx.data
+
+    spawn(fn ->
+      {:ok, sock} = :gen_tcp.accept(listen, 5_000)
+      seed_greet(sock, ctx.info_hash, <<0b10000000>>)
+      serve_all(sock, ctx.data)
+      send(parent, :seed_done)
+    end)
+
+    # Any webseed fetch outside piece 1 is an unexpected call and fails the test.
+    TorrentClient.WebseedHttpMock
+    |> expect(:get, 1, fn "https://x/c.bin", [{"range", "bytes=32768-65535"}] ->
+      {:ok, %Tesla.Env{status: 206, body: data1}}
+    end)
+
+    peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
+    start_sup_unlinked(webseed_opts(ctx, peers: peers))
+
+    pid = coord_pid(ctx.info_hash)
+    ref = Process.monitor(pid)
+
+    assert_receive {:torrent_complete, info_hash}, 15_000
+    assert info_hash == ctx.info_hash
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 15_000
+    assert_receive :seed_done, 5_000
+
+    assert {:ok, data0} == Disk.read_piece(ctx.base, ctx.info, 0)
+    assert {:ok, data1} == Disk.read_piece(ctx.base, ctx.info, 1)
+  end
+
+  test "a failing silent peer yields to webseed after one attempt", ctx do
+    parent = self()
+    {listen, port} = listen!()
+    [data0, data1] = ctx.data
+
+    spawn(fn ->
+      refuse_loop(listen, parent, 0)
+    end)
+
+    # Order-independent: both piece workers race to the mock.
+    TorrentClient.WebseedHttpMock
+    |> expect(:get, 2, fn "https://x/c.bin", [{"range", range}] ->
+      body =
+        case range do
+          "bytes=0-32767" -> data0
+          "bytes=32768-65535" -> data1
+        end
+
+      {:ok, %Tesla.Env{status: 206, body: body}}
+    end)
+
+    peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
+    start_sup_unlinked(webseed_opts(ctx, peers: peers))
+
+    pid = coord_pid(ctx.info_hash)
+    ref = Process.monitor(pid)
+
+    assert_receive {:torrent_complete, info_hash}, 15_000
+    assert info_hash == ctx.info_hash
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 15_000
+
+    # One optimistic dial, then the working source takes every slot.
+    assert_received :refused
+    Process.sleep(300)
+    refute_received :refused
+
+    assert {:ok, data0} == Disk.read_piece(ctx.base, ctx.info, 0)
+    assert {:ok, data1} == Disk.read_piece(ctx.base, ctx.info, 1)
+  end
+
+  test "dead peer supervisor fails webseed starts and stalls out", ctx do
+    # start_child on a dead supervisor exits; the coordinator must stay
+    # up and stall out instead of crashing with it.
+    dead = spawn(fn -> :ok end)
+    dead_ref = Process.monitor(dead)
+    assert_receive {:DOWN, ^dead_ref, :process, _, _}
+
+    TorrentClient.WebseedHttpMock
+    |> stub(:get, fn _url, _headers -> {:error, :boom} end)
+
+    opts =
+      webseed_opts(ctx, [])
+      |> Keyword.merge(peer_sup: dead, watchdog_timeout: 50, max_stalls: 1)
+
+    {:ok, pid} = TorrentClient.Coordinator.start_link(opts)
+    ref = Process.monitor(pid)
+
+    assert_receive {:download_stalled, info_hash}, 5_000
+    assert info_hash == ctx.info_hash
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
+  end
+
+  test "failing webseed exhausts instead of spinning", ctx do
+    TorrentClient.WebseedHttpMock
+    |> stub(:get, fn _url, _headers -> {:error, :econnrefused} end)
+
+    Process.flag(:trap_exit, true)
+    start_sup_unlinked(webseed_opts(ctx, max_peer_failures: 2))
+
+    pid = coord_pid(ctx.info_hash)
+    ref = Process.monitor(pid)
+
+    assert_receive {:swarm_exhausted, info_hash}, 15_000
+    assert info_hash == ctx.info_hash
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 15_000
+    Process.flag(:trap_exit, false)
+  end
 end

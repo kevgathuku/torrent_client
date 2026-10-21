@@ -12,8 +12,10 @@ defmodule TorrentSeeds do
 
   def piece_length, do: @piece_length
 
-  # Minimal single-file .torrent around random data.
-  def craft(tmp, tag, pieces, announce \\ "http://127.0.0.1:9/announce") do
+  # Minimal single-file .torrent around random data. `extra` merges
+  # additional top-level keys (e.g. `%{"url-list" => [...]}` for webseed
+  # torrents) without touching the info dict the hash covers.
+  def craft(tmp, tag, pieces, announce \\ "http://127.0.0.1:9/announce", extra \\ %{}) do
     data = for _ <- 1..pieces, do: :crypto.strong_rand_bytes(@piece_length)
     hashes = Enum.map(data, &:crypto.hash(:sha, &1))
 
@@ -24,7 +26,7 @@ defmodule TorrentSeeds do
       "pieces" => Enum.join(hashes)
     }
 
-    bytes = Bento.encode!(%{"announce" => announce, "info" => raw_info})
+    bytes = Bento.encode!(Map.merge(%{"announce" => announce, "info" => raw_info}, extra))
     path = Path.join(tmp, "#{tag}.torrent")
     File.write!(path, bytes)
     {path, raw_info, data}

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Torrent Client — Architecture Overview (up to kog.11)</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'dark', securityLevel: 'loose' });</script>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2330; --line: #30363d;
+    --fg: #e6edf3; --muted: #8b949e; --green: #3fb950; --amber: #d29922;
+    --blue: #58a6ff; --purple: #bc8cff; --red: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font: 15px/1.6 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; }
+  header.hero { padding: 48px 24px 28px; text-align: center; border-bottom: 1px solid var(--line);
+    background: radial-gradient(ellipse 70% 90% at 50% -20%, #1c2f4a 0%, transparent 70%); }
+  header.hero h1 { margin: 0 0 8px; font-size: 30px; }
+  header.hero p { color: var(--muted); max-width: 760px; margin: 0 auto; }
+  main { max-width: 1080px; margin: 0 auto; padding: 8px 24px 80px; }
+  section { margin-top: 44px; }
+  h2 { font-size: 21px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+  h2 .n { color: var(--muted); font-weight: 400; margin-right: 8px; }
+  h3 { font-size: 16px; margin: 26px 0 10px; }
+  p, li { color: #c9d1d9; }
+  code { background: #21262d; border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .card h4 { margin: 0 0 4px; font-size: 14.5px; }
+  .card h4 code { font-size: 13px; }
+  .card p { margin: 6px 0 0; font-size: 13.5px; color: var(--muted); }
+  .pill { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+    border-radius: 20px; padding: 2px 9px; margin-left: 8px; vertical-align: 1px; }
+  .built { background: rgba(63,185,80,.15); color: var(--green); border: 1px solid rgba(63,185,80,.4); }
+  .planned { background: rgba(210,153,34,.15); color: var(--amber); border: 1px solid rgba(210,153,34,.4); }
+  .legacy { background: rgba(139,148,158,.15); color: var(--muted); border: 1px solid var(--line); }
+  .mermaid { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 8px; margin: 14px 0; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 12px 0; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  td:first-child { white-space: nowrap; }
+  .flow-note { background: var(--panel2); border-left: 3px solid var(--blue); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; font-size: 13.5px; }
+  .warn-note { background: var(--panel2); border-left: 3px solid var(--amber); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; font-size: 13.5px; }
+  footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding: 20px 24px 40px; text-align: center; }
+  a { color: var(--blue); }
+</style>
+</head>
+<body>
+<header class="hero">
+  <h1>Torrent Client — how it works (up to kog.11)</h1>
+  <p>One supervised subtree per torrent: trackers and webseeds supply bytes, the coordinator plans rarest-first,
+     one-shot workers download single pieces over the BEP-3 wire or HTTP Ranges, verified bytes land on disk.
+     <span class="pill built">Built</span> is running code; <span class="pill planned">Planned</span> is a tracked bead away.</p>
+</header>
+<main>
+
+<section>
+  <h2><span class="n">1.</span>Supervision tree</h2>
+  <p>The application owns identity (a unique <code>Registry</code>) and a session supervisor. Each torrent gets its own
+     subtree: an unnamed peer supervisor plus one coordinator that monitors every worker it starts.
+     Workers are unnamed pids — IP alone is never an identity — and the coordinator reaps supervisor-restarted
+     orphans so every live worker is coordinator-assigned.</p>
+  <div class="mermaid">
+flowchart TD
+    APP["Application\nOTP entry"] --> REG["Registry (unique keys)\nper-identity addressing"]
+    APP --> SESS["SessionSupervisor\nDynamicSupervisor"]
+    SESS -.->|"session owns"| TS["TorrentSupervisor × N\none_for_one · 3 restarts / 60s"]
+    TS --> PS["PeerSupervisor\nDynamicSupervisor · transient workers\n3 restarts / 10s"]
+    TS --> COORD["Coordinator (transient)\n:normal = done, no restart"]
+    PS --> W1["PeerWorker × N\nunnamed · one piece each"]
+    COORD -.->|"monitors, assigns,\ncancels, reaps"| W1
+    ANN["Announcer\ninterval re-announce +\nbounded fan-out"] -.->|"supervised\nper torrent"| TS
+  </div>
+  <div class="flow-note">Why <code>one_for_one</code>, not <code>rest_for_one</code> (ADR-0011 sketches the latter): with only
+    two children and no ordering dependency, a coordinator restart must not kill in-flight workers — the new incarnation
+    reaps stale ones on init and resumes from its own plan. The fuller tree (supervised re-announcer, multi-torrent session) landed in kog.10.</div>
+</section>
+
+<section>
+  <h2><span class="n">2.</span>Component map</h2>
+  <h3>Domain — pure, no I/O <span class="pill built">Built</span></h3>
+  <div class="grid">
+    <div class="card"><h4><code>Torrent</code> <span class="pill built">Built</span></h4><p>Info-hash over raw info bytes, piece math (<code>piece_span</code>), announce tiers, trust-boundary validators. Pinned against fixtures.</p></div>
+    <div class="card"><h4><code>PeerMessage</code> <span class="pill built">Built</span></h4><p>BEP-3 codec: per-message structs, length-prefixed encode/decode with error envelopes, 16 KiB cap, Cancel included.</p></div>
+    <div class="card"><h4><code>PeerState</code> <span class="pill built">Built</span></h4><p>Per-peer posture (choke/interest + bitfield). Pure <code>handle/2</code>; selection reads plain index sets.</p></div>
+    <div class="card"><h4><code>DownloadState</code> <span class="pill built">Built</span></h4><p>Per-torrent planning owned solely by the coordinator: rarest-first assign, in-flight set with endgame duplication, requeue, stall timestamps, completion.</p></div>
+    <div class="card"><h4><code>Peer</code> / <code>Handshake</code> <span class="pill built">Built</span></h4><p>Compact + dictionary peer parsing; literal-only address parse (never DNS); 68-byte handshake with info-hash check.</p></div>
+    <div class="card"><h4><code>Backoff</code> / <code>TierState</code> <span class="pill built">Built</span></h4><p>Pure re-announce backoff and tier failover walk shared by the announcer.</p></div>
+  </div>
+  <h3>Effects — behaviour seams + real impls <span class="pill built">Built</span></h3>
+  <div class="grid">
+    <div class="card"><h4><code>Network</code> <span class="pill built">Built</span></h4><p>Raw <code>:gen_tcp</code> dial, 3s timeout. Workers take it via opts; tests substitute doubles.</p></div>
+    <div class="card"><h4><code>Disk</code> <span class="pill built">Built</span></h4><p>Layout init, <code>read/write_piece</code>, resume codec wired since kog.10: staged temp-file + rename on every completion, distrusted reload on resume.</p></div>
+    <div class="card"><h4><code>Clock</code> / <code>Socket</code> / <code>UDP</code> / <code>Requests</code> <span class="pill built">Built</span></h4><p>Time, socket, UDP transport, and HTTP tracker seams. Mox doubles in test; script sockets for wire tests.</p></div>
+  </div>
+  <h3>Coordination <span class="pill built">Built</span></h3>
+  <div class="grid">
+    <div class="card"><h4><code>TorrentClient.Announcer</code> <span class="pill built">Built</span></h4><p>Interval re-announcer walking tiers (UDP via transport seam, HTTP via requests seam) + bounded whole-announce fan-out that merges peers as answers land.</p></div>
+    <div class="card"><h4><code>TorrentClient.Coordinator</code> <span class="pill built">Built</span></h4><p>Owns all torrent state. Assigns pieces to idle peers, tracks worker outcomes, requeues on failure, skips poison peers, duplicates in endgame, restarts on stall, reports terminal states and stops <code>:normal</code>. Since kog.11: webseed fallback when no peer-held piece is assignable — and demotion, so a peer that failed without ever reporting a byte yields to webseed after one optimistic dial.</p></div>
+    <div class="card"><h4><code>TorrentClient.PeerWorker</code> <span class="pill built">Built</span></h4><p>One piece per process: connect → handshake → interest → 16 KiB requests (≤5 in flight) → SHA1 verify → disk write → report. Per-piece deadline; no retries, crash and let the supervisor decide.</p></div>
+    <div class="card"><h4><code>TorrentClient.Session</code> <span class="pill built">Built</span></h4><p>Multi-torrent session (kog.10): owns the listen port, one stable peer-id, and a <code>TorrentSupervisor</code> per info-hash. Parses, lays out, and announce-fetches at add; pause/resume/forget/remove over hex id, prefix, or path; CLI via <code>mix torrent</code>. Since kog.11: <code>resume</code> on an unknown torrent falls back to adding it, continuing from on-disk resume state.</p></div>
+    <div class="card"><h4><code>TorrentClient.WebseedWorker</code> <span class="pill built">Built</span></h4><p>One piece per process over HTTP Ranges (kog.11, BEP-19): fetch → SHA1 verify → disk write → same coordinator reports as peer workers. Cancel drops bytes instead of writing; anything else stops abnormally.</p></div>
+    <div class="card"><h4><code>TorrentClient.Webseed</code> <span class="pill built">Built</span></h4><p>Pure BEP-19 URL building (dir base plus name/path, verbatim single-file URL, unknown schemes skipped) plus the Range-fetch failover across bases. HTTP edge behind <code>WebseedHttpBehaviour</code>; the real client streams over raw hackney with a per-slice byte cap enforced while reading (teardown on overshoot), manual redirect following, and 30&nbsp;s bounds so hung servers fail the slice.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">3.</span>Peer acquisition (announce flow)</h2>
+  <div class="mermaid">
+flowchart LR
+    T[".torrent file"] --> B["Bento decode\ninfo-hash = SHA1(raw info bytes)"]
+    B --> TIERS["announce tiers\nshuffled, failover order"]
+    TIERS --> UDP["UDP announce (BEP-15)\nconnect → announce\nvia transport seam"]
+    TIERS --> HTTP["HTTP announce\nbyte-wise encoded URL\n+ event/key, compact=1"]
+    UDP --> RAW["compact peers\n6B v4 / 18B v6"]
+    HTTP --> RAW2["compact peers\nor dict peers\nip/port text"]
+    RAW --> P["Peer.parse_compact"]
+    RAW2 --> Q["Peer.parse_address\nliteral only, never DNS"]
+    P --> F["Peer.filter_usable\ndrop loopback / unspecified /\nlink-local / multicast\n(+ mapped judged by embedded v4;\nports 1..65535, compact port 0 dropped)"]
+    Q --> F
+    F --> SWARM["peer list\n→ coordinator"]
+  </div>
+  <div class="flow-note">Trust boundary: tracker bytes are hostile input. Text addresses never touch DNS (hostnames are
+    rejected, not resolved); anything undialable is dropped at ingress so it never reaches <code>:gen_tcp.connect</code>.
+    Loopback peers still work in tests because fixtures construct <code>%Peer{}</code> directly, bypassing the filter.</div>
+</section>
+
+<section>
+  <h2><span class="n">4.</span>Piece download (worker loop)</h2>
+  <div class="mermaid">
+sequenceDiagram
+    participant C as Coordinator
+    participant W as PeerWorker (one piece)
+    participant P as Peer (seed)
+    participant D as Disk
+    C->>W: start_child(peer, piece_index, piece_hash)
+    W->>P: TCP connect + 68B handshake (info-hash check)
+    W->>P: Interested + Unchoke
+    P->>W: Bitfield / Have
+    W->>C: {:availability, pid, MapSet}
+    P->>W: Unchoke
+    loop up to 5 in flight, 16 KiB blocks
+        W->>P: Request(index, begin, length)
+        P->>W: Piece(block)
+        W->>C: {:block_progress, index}
+    end
+    W->>W: assemble + SHA1 verify
+    W->>D: write_piece(base, info, index, data)
+    W->>C: {:piece_complete, index}
+    Note over W: exits :normal (transient: never restarted)
+  </div>
+  <div class="flow-note">Failures are first-class branches, not exceptions: connect/handshake/protocol errors stop abnormally
+    (supervisor restarts bounded by intensity; coordinator requeues + counts against the peer); a silent peer trips the
+    per-piece deadline, publishes the missing set, and stops; a peer proven to lack the piece exits <code>:normal</code>
+    and the coordinator records it missing. The webseed twin of this loop is one Range fetch per file slice
+    (same verify → write → report), with cancel honored by a mailbox check before the write.</div>
+</section>
+
+<section>
+  <h2><span class="n">5.</span>Endgame — duplicates race, loser cancels</h2>
+  <div class="mermaid">
+sequenceDiagram
+    participant C as Coordinator
+    participant W1 as Worker 1 (held piece)
+    participant W3 as Worker 3 (duplicate)
+    participant S1 as Seed 1 (stalls last block)
+    participant S3 as Seed 3 (fast)
+    Note over C: needed empty, piece still out → endgame
+    C->>W3: start duplicate of same piece
+    W1->>S1: Request(blocks)... last block held
+    S3->>W3: all blocks instantly
+    W3->>C: {:piece_complete}
+    C->>W1: send {:cancel_piece} (raw, mid-piece)
+    W1->>S1: Cancel(index, begin, length) on the wire
+    Note over W1: exits :normal (already verified elsewhere)
+  </div>
+  <div class="flow-note">The cancel only works because the worker polls its mailbox each loop iteration (keepalives keep a
+    stalled peer iterating) — and because <code>finish/1</code> deliberately does <em>not</em> terminate losers first,
+    which would win the race and swallow the Cancel.</div>
+</section>
+
+<section>
+  <h2><span class="n">6.</span>Watchdog lifecycle</h2>
+  <div class="mermaid">
+stateDiagram-v2
+    [*] --> Running: start, stamp progress
+    Running --> Running: block_progress / piece_complete
+    Running --> Stalled: quiet longer than budget
+    Stalled --> Running: terminate, requeue, redial
+    Stalled --> GivingUp: budget exceeded
+    GivingUp --> [*]: report stalled/swarm_exhausted, stop normal
+    Running --> [*]: all verified, report complete, stop normal
+  </div>
+  <div class="flow-note">Give-ups are <code>:normal</code> stops with a report, never abnormal restarts — retry policy belongs
+    to the session above. Stall detection runs on block progress, not piece completion, so one large piece on a slow link
+    can't trip a sane deadline.</div>
+</section>
+
+<section>
+  <h2><span class="n">7.</span>Missing pieces — where they plug in</h2>
+  <div class="mermaid">
+flowchart TD
+    CLI["CLI + config file\nkog.10"] --> SESS2["Session (per identity)\nkog.10"]
+    SESS2 --> REG2["Registry + SessionSupervisor\n(exists)"]
+    SESS2 --> TS2["TorrentSupervisor × N\n(exists)"]
+    TS2 --> ANN2["Announcer per torrent\nsupervised here — kog.10"]
+    TS2 --> SEEDSRC["Byte sources:\ntrackers + webseeds (built)\n+ incoming (kog.14) + DHT (kog.28)"]
+    TS2 --> COORD2["Coordinator (exists)\n+ resume load/save (kog.13)"]
+    COORD2 --> DISK2["Disk: .part + incomplete dir (kog.17)\nresume file (kog.13)"]
+    COORD2 --> LIMITS["queues / ratios (kog.20)\nspeed limits (kog.21)\nblocklist (kog.22)"]
+    SERVE["Serve uploads (kog.12)"] -.-> COORD2
+    PEERID["stable peer-id (kog.18)\nBEP-7 key (kog.19)"] -.-> ANN2
+    RM["remove + data delete (kog.25)\nevict piece cache (kog.23)"] -.-> SESS2
+  </div>
+  <table>
+    <tr><th>Bead</th><th>What lands where</th></tr>
+    <tr><td><code>kog.10</code> Session, persistence, config, CLI <span class="pill built">Built</span></td><td>Session GenServer under the existing supervisor; owns TorrentSupervisors; Announcer supervised per torrent; config file + CLI surface. Also shipped <code>kog.25</code> remove and deleted the legacy Downloader.</td></tr>
+    <tr><td><code>kog.13</code> Give-up keeps published progress</td><td>Wire the existing resume codec: persist on each completion (data <em>before</em> resume mark, temp+rename), load on init. Report-then-stop already in place.</td></tr>
+    <tr><td><code>kog.11</code> Webseeds <span class="pill built">Built</span></td><td>url-list parsed at load; missing pieces fetched over HTTP Ranges with SHA1 verify through the piece path. Coordinator treats webseeds as last resort behind live peers, with demotion for never-reporting failed peers. Review hardening: temporary webseed workers, exact-size bodies, streaming byte caps. Live-verified against archive.org (283/479 pieces and progressing).</td></tr>
+    <tr><td><code>kog.14</code> Listening port</td><td>Inbound accept loop; workers gain an upload path (today they only download).</td></tr>
+    <tr><td><code>kog.17</code> Incomplete dir + .part</td><td>Per-block spills land in the incomplete dir; rename on verify.</td></tr>
+    <tr><td><code>kog.12</code> Seeding (upload side + ratio)</td><td>Seed mode (serve verified pieces), choked/unchoked upload side first.</td></tr>
+    <tr><td><code>kog.28</code> DHT peer discovery (BEP-5) <span class="pill planned">Planned</span></td><td>Split out of kog.12: Kademlia routing, FIND_NODE/GET_PEERS/ANNOUNCE_PEER as a peer source alongside trackers — including as a download fallback for dead-tracker torrents.</td></tr>
+    <tr><td><code>kog.18 / 19</code> Stable peer-id / BEP-7 key</td><td>Identity params that ride every announce.</td></tr>
+    <tr><td><code>kog.20 / 21 / 22</code> Queues, limits, blocklist</td><td>Session-level scheduling and coordinator-side filtering.</td></tr>
+    <tr><td><code>kog.23</code> Cache evict</td><td>Lifecycle op on verified data.</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2><span class="n">8.</span>Reading guide</h2>
+  <ul>
+    <li>Start at <code>lib/torrent_client/coordinator.ex</code> moduledoc (the whole protocol in one page), then <code>lib/download_state.ex</code> (pure rules), then <code>lib/torrent_client/peer_worker.ex</code> (wire loop) and <code>lib/torrent_client/webseed_worker.ex</code> (HTTP twin).</li>
+    <li><code>test/coordinator_test.exs</code> runs the full download against loopback seed doubles — the fastest way to see the system move.</li>
+    <li>Design rationale lives in <code>docs/adr/</code> (supervision in <code>0011</code>, wire codec in <code>0004</code>, tracker protocols in <code>0003</code>).</li>
+    <li>Domain purity is enforced by <code>test/domain_purity_test.exs</code>: the domain files make no effectful calls, ever.</li>
+  </ul>
+</section>
+
+</main>
+<footer>Current through the kog.11 milestone (PR #20) · <code>docs/overview.html</code> · open in a browser (Mermaid via CDN) · behaviors verified by <code>mix test</code>, not by these diagrams.</footer>
+</body>
+</html>
