@@ -76,7 +76,8 @@ defmodule Downloader do
         %{bento_torrent: bento_torrent, info_hash: info_hash, peer_id: peer_id, port: port} =
           state
       ) do
-    tracker_url = Tracker.tracker_url(bento_torrent, info_hash, peer_id, port)
+    tracker_url =
+      Tracker.tracker_url(bento_torrent.announce, bento_torrent, info_hash, peer_id, port)
 
     case RequestsClient.get_peers(tracker_url) do
       # TODO: also match on the interval and store it

@@ -4,4 +4,5 @@ Mox.defmock(TorrentClientRequestsMock, for: TorrentClient.Requests.RequestsBehav
 Mox.defmock(TorrentClient.NetworkMock, for: TorrentClient.NetworkBehaviour)
 Mox.defmock(TorrentClient.DiskMock, for: TorrentClient.DiskBehaviour)
 Mox.defmock(TorrentClient.ClockMock, for: TorrentClient.ClockBehaviour)
+Mox.defmock(TorrentClient.UdpMock, for: TorrentClient.UdpBehaviour)
 Application.put_env(:torrent_client, :requests_impl, TorrentClient.Requests.RequestsMock)

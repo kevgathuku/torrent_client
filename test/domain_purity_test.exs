@@ -6,7 +6,7 @@ defmodule DomainPurityTest do
   """
   use ExUnit.Case, async: true
 
-  @domain_files ~w(lib/peer.ex lib/torrent.ex lib/handshake.ex lib/tracker.ex lib/peer_message.ex lib/peer_state.ex)
+  @domain_files ~w(lib/peer.ex lib/torrent.ex lib/handshake.ex lib/tracker.ex lib/peer_message.ex lib/peer_state.ex lib/torrent_client/udp_tracker.ex lib/torrent_client/tier_state.ex lib/torrent_client/backoff.ex)
   @banned [
     ~r/\bGenServer\b/,
     ~r/:gen_tcp\b/,
