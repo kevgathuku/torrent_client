@@ -54,11 +54,12 @@ defmodule Downloader do
   @impl true
   def init(torrent_filename) do
     case parse_torrent_file(torrent_filename) do
-      {:ok, bento_torrent} ->
+      {:ok, bento_torrent, info} ->
         state =
           @init_state
           |> Map.put(:filename, torrent_filename)
           |> Map.put(:bento_torrent, bento_torrent)
+          |> Map.put(:info_hash, Torrent.info_hash(info))
 
         {:ok, state, {:continue, :fetch_peers}}
 
@@ -72,9 +73,10 @@ defmodule Downloader do
   @impl true
   def handle_continue(
         :fetch_peers,
-        %{bento_torrent: bento_torrent, peer_id: peer_id, port: port} = state
+        %{bento_torrent: bento_torrent, info_hash: info_hash, peer_id: peer_id, port: port} =
+          state
       ) do
-    tracker_url = Tracker.tracker_url(bento_torrent, peer_id, port)
+    tracker_url = Tracker.tracker_url(bento_torrent, info_hash, peer_id, port)
 
     case RequestsClient.get_peers(tracker_url) do
       # TODO: also match on the interval and store it
@@ -139,9 +141,15 @@ defmodule Downloader do
   def handle_cast(:stop, state), do: {:stop, :normal, state}
 
   def parse_torrent_file(filename) do
+    # Double parse of a few KB: structs drop unknown info keys, so the raw
+    # string-keyed map comes from a plain decode for hashing.
     with {:ok, file_contents} <- File.read(filename),
-         {:ok, parsed_torrent} <- Bento.torrent(file_contents) do
-      {:ok, parsed_torrent}
+         {:ok, parsed_torrent} <- Bento.torrent(file_contents),
+         {:ok, decoded} <- Bento.decode(file_contents) do
+      case decoded do
+        %{"info" => info} when is_map(info) -> {:ok, parsed_torrent, info}
+        _ -> {:error, :missing_info}
+      end
     end
   end
 end

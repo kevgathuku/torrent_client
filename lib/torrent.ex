@@ -112,26 +112,16 @@ defmodule Torrent do
   defp info_total(_info), do: 0
 
   @doc """
-  Compute the info hash from a Bento torrent file
-  Handles both single file torrents and multi-file torrents
+  Hex info-hash over the full decoded info map, all keys as found.
+  Expects the raw string-keyed map from a validated torrent (`parse_torrent_file`);
+  file bytes are the validated hostile input, so this stays total. Structs
+  must not be re-encoded here: Bento drops unknown info keys.
   """
-  def info_hash(bento_torrent) do
-    bento_torrent
-    |> bencode_info()
+  def info_hash(info) when is_map(info) do
+    info
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
     |> Bento.encode!()
     |> Utils.sha_sum()
     |> Base.encode16()
-  end
-
-  defp bencode_info(bento_torrent) do
-    case bento_torrent.info do
-      %Bento.Metainfo.SingleFile{} ->
-        bento_torrent.info
-        |> Map.take([:name, :pieces, :"piece length", :length])
-
-      %Bento.Metainfo.MultiFile{} ->
-        bento_torrent.info
-        |> Map.take([:name, :pieces, :"piece length", :files])
-    end
   end
 end

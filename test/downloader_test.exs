@@ -18,21 +18,21 @@ defmodule DownloaderTest do
   end
 
   test "parses single file torrent to a bento torrent" do
-    {:ok, bento_torrent} = Downloader.parse_torrent_file(TestHelpers.single_file_torrent())
+    {:ok, bento_torrent, _info} = Downloader.parse_torrent_file(TestHelpers.single_file_torrent())
 
     assert bento_torrent.__struct__ == Bento.Metainfo.Torrent
     assert bento_torrent.info.__struct__ == Bento.Metainfo.SingleFile
   end
 
   test "parses multi file torrent to a bento torrent" do
-    {:ok, bento_torrent} = Downloader.parse_torrent_file(TestHelpers.multi_file_torrent())
+    {:ok, bento_torrent, _info} = Downloader.parse_torrent_file(TestHelpers.multi_file_torrent())
 
     assert bento_torrent.__struct__ == Bento.Metainfo.Torrent
     assert bento_torrent.info.__struct__ == Bento.Metainfo.MultiFile
   end
 
   test "returns error for a non-existent torrent file" do
-    refute match?({:ok, _}, Downloader.parse_torrent_file("mypath"))
+    refute match?({:ok, _, _}, Downloader.parse_torrent_file("mypath"))
   end
 
   @tag torrent_file_path: TestHelpers.single_file_torrent()
