@@ -602,4 +602,231 @@ defmodule PeerWorkerTest do
 
     assert_receive {:EXIT, ^pid, {:disk_error, :enospc}}, 5_000
   end
+
+  describe "coordinator reporting" do
+    test "reports availability, progress, and completion", ctx do
+      info = %{:"piece length" => 16_384, name: "one.bin", length: 16_384}
+      :ok = Disk.init_layout(ctx.base, info)
+      data = :crypto.strong_rand_bytes(16_384)
+      hash = :crypto.hash(:sha, data)
+      info_hash = :crypto.strong_rand_bytes(20)
+      parent = self()
+      {listen, port} = listen!()
+
+      spawn(fn ->
+        sock = listen |> accept_handshake(info_hash) |> greet(info_hash)
+        send_message(sock, %Unchoke{})
+        {:ok, %Request{index: 0, begin: 0, length: 16_384}, <<>>} = recv_frame(sock)
+        send_message(sock, %Piece{index: 0, begin: 0, block: data})
+        {:error, :closed} = :gen_tcp.recv(sock, 4, 5_000)
+      end)
+
+      Process.flag(:trap_exit, true)
+
+      {:ok, pid} =
+        PeerWorker.start_link(
+          worker_opts(ctx, info_hash, port, info: info, piece_hash: hash, report_to: parent)
+        )
+
+      assert_receive {:availability, ^pid, set}, 5_000
+      assert MapSet.member?(set, 0)
+      assert_receive {:block_progress, 0}, 5_000
+      assert_receive {:piece_complete, 0}, 5_000
+      assert_receive {:EXIT, ^pid, :normal}, 5_000
+      assert {:ok, data} == Disk.read_piece(ctx.base, info, 0)
+    end
+
+    test "reports availability learned from Have messages", ctx do
+      info = %{:"piece length" => 16_384, name: "have.bin", length: 16_384}
+      :ok = Disk.init_layout(ctx.base, info)
+      data = :crypto.strong_rand_bytes(16_384)
+      hash = :crypto.hash(:sha, data)
+      info_hash = :crypto.strong_rand_bytes(20)
+      parent = self()
+      {listen, port} = listen!()
+
+      spawn(fn ->
+        {:ok, sock} = :gen_tcp.accept(listen, 5_000)
+        {:ok, bytes} = :gen_tcp.recv(sock, 68, 5_000)
+        {:ok, %Handshake{info_hash: ^info_hash}} = Handshake.deserialize(bytes)
+        :ok = :gen_tcp.send(sock, Handshake.init(info_hash, @fake_id) |> Handshake.serialize())
+        send_message(sock, %Have{index: 0})
+        {:ok, %Interested{}, <<>>} = recv_frame(sock)
+        {:ok, %Unchoke{}, <<>>} = recv_frame(sock)
+        send_message(sock, %Unchoke{})
+        {:ok, %Request{index: 0, begin: 0, length: 16_384}, <<>>} = recv_frame(sock)
+        send_message(sock, %Piece{index: 0, begin: 0, block: data})
+        {:error, :closed} = :gen_tcp.recv(sock, 4, 5_000)
+      end)
+
+      Process.flag(:trap_exit, true)
+
+      {:ok, pid} =
+        PeerWorker.start_link(
+          worker_opts(ctx, info_hash, port, info: info, piece_hash: hash, report_to: parent)
+        )
+
+      assert_receive {:availability, ^pid, set}, 5_000
+      assert MapSet.member?(set, 0)
+      assert_receive {:EXIT, ^pid, :normal}, 5_000
+    end
+
+    test "cancel_piece sends Cancel for outstanding requests and stops", ctx do
+      info = %{:"piece length" => 32_768, name: "two.bin", length: 32_768}
+      :ok = Disk.init_layout(ctx.base, info)
+      data = :crypto.strong_rand_bytes(32_768)
+      hash = :crypto.hash(:sha, data)
+      info_hash = :crypto.strong_rand_bytes(20)
+      parent = self()
+      {listen, port} = listen!()
+
+      spawn(fn ->
+        sock = listen |> accept_handshake(info_hash) |> greet(info_hash)
+        send_message(sock, %Unchoke{})
+        # Both requests go out before any block comes back, so the
+        # cancel below always finds an outstanding request.
+        {:ok, %Request{index: 0, begin: 0}, <<>>} = recv_frame(sock)
+        {:ok, %Request{index: 0, begin: 16_384}, <<>>} = recv_frame(sock)
+        send_message(sock, %Piece{index: 0, begin: 0, block: binary_part(data, 0, 16_384)})
+        send(parent, :sent_first)
+        # Hold the final block; keepalives keep the worker iterating so
+        # the cancel below is picked up while the request is outstanding.
+        keepalive = spawn(fn -> keepalive_loop(sock) end)
+        {:ok, %Cancel{index: 0}, <<>>} = recv_frame(sock)
+        send(parent, :got_cancel)
+        Process.exit(keepalive, :kill)
+      end)
+
+      Process.flag(:trap_exit, true)
+
+      {:ok, pid} =
+        PeerWorker.start_link(
+          worker_opts(ctx, info_hash, port,
+            info: info,
+            piece_hash: hash,
+            max_inflight: 2,
+            report_to: parent
+          )
+        )
+
+      assert_receive :sent_first, 5_000
+      send(pid, {:cancel_piece, 0})
+      assert_receive :got_cancel, 5_000
+      assert_receive {:EXIT, ^pid, :normal}, 5_000
+    end
+
+    test "stale cancel index is ignored and the piece completes", ctx do
+      # ScriptSock answers instantly, so the test gates on the progress
+      # report: the cancel can only land while the second block is out.
+      # A spurious Cancel send would consume a script item and crash
+      # the run, so clean completion proves none was sent.
+      info_hash = :crypto.strong_rand_bytes(20)
+      peer_hs = Handshake.init(info_hash, @fake_id) |> Handshake.serialize()
+      parent = self()
+
+      {:ok, b0} =
+        PeerMessage.encode(%Piece{index: 0, begin: 0, block: binary_part(ctx.data, 0, 16_384)})
+
+      <<len0::32-big, payload0::binary>> = b0
+
+      {:ok, b1} =
+        PeerMessage.encode(%Piece{
+          index: 0,
+          begin: 16_384,
+          block: binary_part(ctx.data, 16_384, 16_384)
+        })
+
+      <<len1::32-big, payload1::binary>> = b1
+
+      {:ok, script} =
+        ScriptSock.start([
+          :ok,
+          {:ok, peer_hs},
+          :ok,
+          :ok,
+          {:ok, <<0, 0, 0, 2>>},
+          {:ok, <<5, 0b10000000>>},
+          {:ok, <<0, 0, 0, 1>>},
+          {:ok, <<1>>},
+          :ok,
+          :ok,
+          {:ok, <<len0::32-big>>},
+          {:ok, payload0},
+          {:ok, <<0, 0, 0, 0>>},
+          {:ok, <<len1::32-big>>},
+          {:ok, payload1}
+        ])
+
+      expect(TorrentClient.NetworkMock, :connect, fn _peer -> {:ok, script} end)
+
+      Process.flag(:trap_exit, true)
+
+      {:ok, pid} =
+        PeerWorker.start_link(
+          worker_opts(ctx, info_hash, 1,
+            network: TorrentClient.NetworkMock,
+            sock: ScriptSock,
+            report_to: parent
+          )
+        )
+
+      assert_receive {:block_progress, 0}, 1_000
+      send(pid, {:cancel_piece, 99})
+      assert_receive {:EXIT, ^pid, :normal}, 1_000
+      assert {:ok, ctx.data} == Disk.read_piece(ctx.base, ctx.info, 0)
+    end
+
+    test "failed Cancel send stops with the reason", ctx do
+      info_hash = :crypto.strong_rand_bytes(20)
+      peer_hs = Handshake.init(info_hash, @fake_id) |> Handshake.serialize()
+      parent = self()
+
+      {:ok, b0} =
+        PeerMessage.encode(%Piece{index: 0, begin: 0, block: binary_part(ctx.data, 0, 16_384)})
+
+      <<len0::32-big, payload0::binary>> = b0
+
+      {:ok, script} =
+        ScriptSock.start([
+          :ok,
+          {:ok, peer_hs},
+          :ok,
+          :ok,
+          {:ok, <<0, 0, 0, 2>>},
+          {:ok, <<5, 0b10000000>>},
+          {:ok, <<0, 0, 0, 1>>},
+          {:ok, <<1>>},
+          :ok,
+          :ok,
+          {:ok, <<len0::32-big>>},
+          {:ok, payload0},
+          {:ok, <<0, 0, 0, 0>>},
+          {:error, :closed}
+        ])
+
+      expect(TorrentClient.NetworkMock, :connect, fn _peer -> {:ok, script} end)
+
+      Process.flag(:trap_exit, true)
+
+      {:ok, pid} =
+        PeerWorker.start_link(
+          worker_opts(ctx, info_hash, 1,
+            network: TorrentClient.NetworkMock,
+            sock: ScriptSock,
+            report_to: parent
+          )
+        )
+
+      assert_receive {:block_progress, 0}, 1_000
+      send(pid, {:cancel_piece, 0})
+      assert_receive {:EXIT, ^pid, {:send_failed, :closed}}, 1_000
+    end
+  end
+
+  defp keepalive_loop(sock) do
+    {:ok, bytes} = PeerMessage.encode(%KeepAlive{})
+    :ok = :gen_tcp.send(sock, bytes)
+    Process.sleep(20)
+    keepalive_loop(sock)
+  end
 end
