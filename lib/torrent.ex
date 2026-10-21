@@ -84,6 +84,63 @@ defmodule Torrent do
 
   def validate_path(_parts), do: {:error, :empty_path}
 
+  @doc """
+  Ordered file entries for the torrent's info dict, each with its relative
+  path and global byte offset. Single-file info yields one entry; multi-file
+  info yields one per file under the torrent name dir (BEP-3 concatenation
+  order). Every path is validated up front, so hostile entries fail before
+  any caller runs mkdir.
+  """
+  @spec layout(map()) :: {:ok, [map()]} | {:error, term()}
+  def layout(info) when is_map(info) do
+    case Map.get(info, :"piece length") do
+      plen when is_integer(plen) and plen > 0 -> layout_entries(info)
+      _ -> {:error, :invalid_piece_length}
+    end
+  end
+
+  def layout(_info), do: {:error, :invalid_info}
+
+  @doc """
+  Global byte span of a piece as `{offset, size}`. The last piece may be
+  short; unknown indices fail instead of addressing outside the torrent.
+  """
+  @spec piece_span(map(), integer()) ::
+          {:ok, {non_neg_integer(), pos_integer()}} | {:error, term()}
+  def piece_span(info, index) when is_map(info) and is_integer(index) and index >= 0 do
+    with {:ok, entries} <- layout(info) do
+      plen = Map.get(info, :"piece length")
+      total = Enum.reduce(entries, 0, &(&1.length + &2))
+
+      if index < div(total + plen - 1, plen) do
+        {:ok, {index * plen, min(plen, total - index * plen)}}
+      else
+        {:error, :piece_out_of_bounds}
+      end
+    end
+  end
+
+  def piece_span(_info, _index), do: {:error, :invalid_piece}
+
+  @doc """
+  Split a global `{offset, size}` span into per-file slices as
+  `{path, file_offset, length}` tuples, in torrent order. Zero-length files
+  never overlap, so they drop out naturally.
+  """
+  @spec split_span([map()], non_neg_integer(), pos_integer()) :: [
+          {String.t(), non_neg_integer(), pos_integer()}
+        ]
+  def split_span(entries, offset, size) do
+    stop = offset + size
+
+    for entry <- entries,
+        first = max(offset, entry.offset),
+        last = min(stop, entry.offset + entry.length),
+        first < last do
+      {entry.path, first - entry.offset, last - first}
+    end
+  end
+
   defp valid_component?(component) when is_binary(component) and component != "" do
     component != "." and component != ".." and not String.starts_with?(component, "/")
   end
@@ -95,6 +152,42 @@ defmodule Torrent do
   defp classify_component(""), do: :empty_component
   defp classify_component(component) when is_binary(component), do: :absolute_path
   defp classify_component(_component), do: :invalid_component
+
+  defp layout_entries(%{files: files} = info) when is_list(files) do
+    with {:ok, name} <- layout_name(info) do
+      append_files(files, name, 0, [])
+    end
+  end
+
+  defp layout_entries(%{length: length} = info) when is_integer(length) and length >= 0 do
+    with {:ok, name} <- layout_name(info),
+         {:ok, rel} <- validate_path([name]) do
+      {:ok, [%{path: rel, length: length, offset: 0}]}
+    end
+  end
+
+  defp layout_entries(_info), do: {:error, :unknown_layout}
+
+  defp layout_name(%{name: name}) when is_binary(name) and name != "", do: {:ok, name}
+  defp layout_name(_info), do: {:error, :missing_name}
+
+  defp append_files([], _name, _offset, []), do: {:error, :no_files}
+  defp append_files([], _name, _offset, acc), do: {:ok, Enum.reverse(acc)}
+
+  defp append_files([file | rest], name, offset, acc) do
+    with {:ok, rel} <- file_rel(name, file),
+         {:ok, length} <- file_length(file) do
+      append_files(rest, name, offset + length, [
+        %{path: rel, length: length, offset: offset} | acc
+      ])
+    end
+  end
+
+  defp file_rel(name, %{path: parts}) when is_list(parts), do: validate_path([name | parts])
+  defp file_rel(_name, _file), do: {:error, :invalid_file_path}
+
+  defp file_length(%{length: length}) when is_integer(length) and length >= 0, do: {:ok, length}
+  defp file_length(_file), do: {:error, :invalid_file_length}
 
   @doc """
   Get the remaining length from a Bento torrent file
