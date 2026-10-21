@@ -8,7 +8,7 @@ defmodule TorrentClient.MixProject do
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
-      test_coverage: [tool: ExCoveralls, summary: [threshold: 80]],
+      test_coverage: [summary: [threshold: 80]],
       dialyzer: [plt_add_apps: [:mix]],
       deps: deps()
     ]

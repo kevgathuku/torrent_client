@@ -37,6 +37,12 @@ jobs:
       run: mix deps.get
     - name: Run tests
       run: mix test --cover
+    # coveralls.json re-runs the suite to emit cover/excoveralls.json;
+    # the 80% gate above stays the single threshold (mix.exs).
+    - name: Build coverage artifact
+      run: mix coveralls.json
+      env:
+        MIX_ENV: test
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v5
       with:
