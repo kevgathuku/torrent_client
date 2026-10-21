@@ -83,8 +83,8 @@ defmodule CoordinatorTest do
   end
 
   defp set_bit(acc, i) do
-    pos = div(i, 8)
-    <<head::binary-size(pos), byte, rest::binary>> = acc
+    {head, tail} = :erlang.split_binary(acc, div(i, 8))
+    <<byte, rest::binary>> = tail
     head <> <<Bitwise.bor(byte, Bitwise.bsr(0b10000000, rem(i, 8)))>> <> rest
   end
 

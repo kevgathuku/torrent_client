@@ -12,12 +12,10 @@ defmodule TorrentClient.Announcer do
   """
 
   use GenServer
-  require Logger
 
   alias TorrentClient.{Backoff, TierState, UdpTracker}
   alias TorrentClient.Requests.Client, as: RequestsClient
 
-  @impl true
   def start_link(opts) do
     tiers =
       case Keyword.get(opts, :tracker_url) do

@@ -20,14 +20,19 @@ defmodule TorrentClient.TierState do
     end
   end
 
-  @doc "Record success: tracker to the front of its tier, order restarts."
+  @doc """
+  Record an announce outcome for the current tracker. Success moves it
+  to the front of its tier and restarts the order; failure advances
+  past the tracker.
+  """
+  def report(state, outcome, url)
+
   def report(%{tiers: tiers, tier: tier} = state, :ok, url) do
     current = Enum.at(tiers, tier, [])
     moved = [url | Enum.reject(current, &(&1 == url))]
     {:ok, %{state | tiers: List.replace_at(tiers, tier, moved), tier: 0, pos: 0}}
   end
 
-  @doc "Record failure: advance past the tracker."
   def report(%{tiers: tiers, tier: tier, pos: pos} = state, :error, _url) do
     if pos + 1 < length(Enum.at(tiers, tier)) do
       {:ok, %{state | pos: pos + 1}}
