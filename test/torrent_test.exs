@@ -6,28 +6,26 @@ defmodule TorrentTest do
   @single_file_torrent TestHelpers.single_file_torrent()
 
   test "calculates the correct info hash for single file torrent" do
-    {:ok, bento_torrent} = Downloader.parse_torrent_file(@single_file_torrent)
-    info_hash = Torrent.info_hash(bento_torrent)
+    {:ok, _bento, info} = Downloader.parse_torrent_file(@single_file_torrent)
 
-    assert info_hash == "A9164E99D5181CFEF0C23C209334103619080908"
+    assert Torrent.info_hash(info) == "A9164E99D5181CFEF0C23C209334103619080908"
   end
 
   test "calculates the correct info hash for multi file torrent" do
-    {:ok, bento_torrent} = Downloader.parse_torrent_file(@multi_file_torrent)
-    info_hash = Torrent.info_hash(bento_torrent)
+    {:ok, _bento, info} = Downloader.parse_torrent_file(@multi_file_torrent)
 
-    assert info_hash == "DD8255ECDC7CA55FB0BBF81323D87062DB1F6D1C"
+    assert Torrent.info_hash(info) == "DD8255ECDC7CA55FB0BBF81323D87062DB1F6D1C"
   end
 
   test "get piece hashes for a single file torrent" do
-    {:ok, bento_torrent} = Downloader.parse_torrent_file(@single_file_torrent)
+    {:ok, bento_torrent, _info} = Downloader.parse_torrent_file(@single_file_torrent)
     piece_hashes = Torrent.get_piece_hashes(bento_torrent)
 
     assert Enum.all?(piece_hashes, fn x -> byte_size(x) == 20 end) == true
   end
 
   test "get piece hashes for a multi file torrent" do
-    {:ok, bento_torrent} = Downloader.parse_torrent_file(@multi_file_torrent)
+    {:ok, bento_torrent, _info} = Downloader.parse_torrent_file(@multi_file_torrent)
     piece_hashes = Torrent.get_piece_hashes(bento_torrent)
 
     assert Enum.all?(piece_hashes, fn x -> byte_size(x) == 20 end) == true
@@ -41,13 +39,13 @@ defmodule TorrentTest do
   end
 
   test "announce tiers fall back to announce when the list is empty" do
-    {:ok, bento} = TestHelpers.single_file_torrent() |> Downloader.parse_torrent_file()
+    {:ok, bento, _info} = TestHelpers.single_file_torrent() |> Downloader.parse_torrent_file()
 
     assert Torrent.announce_tiers(bento) == [[bento.announce]]
   end
 
   test "announce tiers preserve tier structure" do
-    {:ok, bento} =
+    {:ok, bento, _info} =
       "test/_data/manjaro-gnome-17.1.9-stable-x86_64.torrent" |> Downloader.parse_torrent_file()
 
     assert Torrent.announce_tiers(bento) == [
@@ -58,7 +56,7 @@ defmodule TorrentTest do
 
   describe "validate_block/4" do
     setup do
-      {:ok, bento} = TestHelpers.single_file_torrent() |> Downloader.parse_torrent_file()
+      {:ok, bento, _info} = TestHelpers.single_file_torrent() |> Downloader.parse_torrent_file()
       %{info: bento.info}
     end
 
@@ -104,7 +102,7 @@ defmodule TorrentTest do
     test "accepts every real path in the multi-file fixtures" do
       multi =
         for path <- Path.wildcard("test/_data/*.torrent"),
-            {:ok, bento} = Downloader.parse_torrent_file(path),
+            {:ok, bento, _info} = Downloader.parse_torrent_file(path),
             Map.has_key?(bento.info, :files) do
           {path, bento.info.files}
         end
@@ -117,7 +115,7 @@ defmodule TorrentTest do
     end
 
     test "rejects a real multi-file path with an injected escape" do
-      {:ok, bento} =
+      {:ok, bento, _info} =
         Downloader.parse_torrent_file("test/_data/big-buck-bunny.torrent")
 
       [first | _] = bento.info.files

@@ -23,6 +23,6 @@ defmodule ClientIntegrationTest do
     {:ok, pid} =
       Client.start_link(%{info_hash: "hash"}, peer, "peer-id", network: TorrentClient.NetworkMock)
 
-    assert_receive {:EXIT, ^pid, "ERROR: Unable to connect to Peer: 127.0.0.1"}
+    assert_receive {:EXIT, ^pid, "ERROR: Unable to connect to Peer: 127.0.0.1"}, 1_000
   end
 end

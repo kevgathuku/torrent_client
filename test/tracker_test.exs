@@ -13,8 +13,9 @@ defmodule TrackerTest do
     case context do
       # If torrent_file_path is available in the context
       %{torrent_file: torrent_file} ->
-        {:ok, bento_torrent} = Downloader.parse_torrent_file(torrent_file)
-        tracker_url = Tracker.tracker_url(bento_torrent, @peer_id, @port)
+        {:ok, bento_torrent, info} = Downloader.parse_torrent_file(torrent_file)
+        info_hash = Torrent.info_hash(info)
+        tracker_url = Tracker.tracker_url(bento_torrent, info_hash, @peer_id, @port)
         # Context to be available to tests
         %{bento_torrent: bento_torrent, tracker_url: tracker_url}
 

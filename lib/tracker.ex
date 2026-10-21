@@ -1,9 +1,13 @@
 defmodule Tracker do
+  @moduledoc """
+  Tracker HTTP edge and response parsing. Announce tiers come from
+  `Torrent.announce_tiers/1`; peer lists parse into `Peer` structs.
+  """
   @doc """
   Returns the Tracker URL with correctly encoded params
   """
-  def tracker_url(bento_torrent, peer_id, port) do
-    info_hash = Torrent.info_hash(bento_torrent) |> Base.decode16!()
+  def tracker_url(bento_torrent, info_hash, peer_id, port) do
+    info_hash = info_hash |> Base.decode16!()
 
     params =
       %{
@@ -28,17 +32,21 @@ defmodule Tracker do
         {:error, reason}
 
       decoded when is_map(decoded) ->
-        if Map.has_key?(decoded, "peers") or Map.has_key?(decoded, "peers6") do
-          with {:ok, v4} <- parse_family(decoded, "peers", :ipv4),
-               {:ok, v6} <- parse_family(decoded, "peers6", :ipv6) do
-            {:ok, %{peers: v4 ++ v6}}
-          end
-        else
-          {:error, "Unknown response from tracker"}
-        end
+        parse_peers(decoded)
 
       _ ->
         {:error, "Unknown response from tracker"}
+    end
+  end
+
+  defp parse_peers(decoded) do
+    if Map.has_key?(decoded, "peers") or Map.has_key?(decoded, "peers6") do
+      with {:ok, v4} <- parse_family(decoded, "peers", :ipv4),
+           {:ok, v6} <- parse_family(decoded, "peers6", :ipv6) do
+        {:ok, %{peers: v4 ++ v6}}
+      end
+    else
+      {:error, "Unknown response from tracker"}
     end
   end
 
