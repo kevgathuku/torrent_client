@@ -54,10 +54,12 @@ Stop the server with `Downloader.stop(pid)`.
 )
 ```
 The worker is unnamed, so many share one supervisor. It handshakes, sends
-interest plus unchoke, requests the piece in 16 KiB blocks while unchoked,
-verifies the SHA1, and writes through the disk seam — then exits `:normal`
-(which never restarts). Any failure stops fail-closed and the supervisor
-restarts it, bounded by its intensity.
+interest plus unchoke, requests the piece in 16 KiB blocks (up to five in
+flight) while unchoked and under a per-piece deadline, verifies the SHA1,
+and writes through the disk seam — then exits `:normal` (which never
+restarts). Any failure stops fail-closed and the supervisor restarts it,
+bounded by its intensity; a deadline give-up publishes the missing blocks
+for the coordinator to requeue.
 
 5. #pending Coordinate verified writes to disk with watchdog re-requests (per-torrent coordinator — kog.9)
 
