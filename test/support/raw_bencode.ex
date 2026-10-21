@@ -16,8 +16,7 @@ defmodule RawBencode do
   def decode(bin) do
     [len, rest] = String.split(bin, ":", parts: 2)
     len = String.to_integer(len)
-    <<str::binary-size(len), rest::binary>> = rest
-    {str, rest}
+    {binary_part(rest, 0, len), binary_part(rest, len, byte_size(rest) - len)}
   end
 
   @doc "The exact as-found bytes of the info dict in a .torrent file."

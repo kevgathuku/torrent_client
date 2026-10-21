@@ -59,7 +59,18 @@ defmodule TorrentClient.PeerWorker do
   #{@recv_timeout}). Pipeline: `:max_inflight` outstanding block requests
   (default #{@max_inflight}), `:piece_timeout` ms for the whole piece
   (default #{@piece_timeout}), `:report_to` pid receiving
-  `{:piece_timeout, index, missing}` on give-up (default `nil`).
+  `{:piece_timeout, index, missing}` on give-up (default `nil`). When set,
+  it also receives `{:piece_complete, index}` after a verified write,
+  `{:block_progress, index}` per accepted block, and `{:availability,
+  worker_pid, set}` whenever the peer's known pieces grow (bitfield or
+  `Have`). The coordinator consumes these; the worker never blocks on
+  them.
+
+  A raw `{:cancel_piece, index}` message (sent with `send/2`, not a
+  GenServer call, so it lands while the worker is mid-piece) cancels
+  every outstanding request on the wire with `Cancel` messages and stops
+  normally — the piece was already verified elsewhere. Stale indices
+  are ignored.
   """
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -174,15 +185,50 @@ defmodule TorrentClient.PeerWorker do
 
   # Loop: finish when every block is in, give up at the deadline, stop
   # normally when a seen bitfield proves the peer lacks our piece, else
-  # fill the pipeline and wait for answers.
+  # fill the pipeline and wait for answers. The cancel drain runs first
+  # so an endgame loser stops even while blocks are still arriving: the
+  # non-{:cont, _} passthrough keeps every callback return valid.
   defp serve(state) do
-    cond do
-      complete?(state) -> verify_and_write(state)
-      deadline_exceeded?(state) -> give_up(state)
-      known_missing?(state) -> {:stop, :normal, state}
-      true -> fill_pipeline(state)
+    with {:cont, state} <- drain_cancel(state) do
+      cond do
+        complete?(state) -> verify_and_write(state)
+        deadline_exceeded?(state) -> give_up(state)
+        known_missing?(state) -> {:stop, :normal, state}
+        true -> fill_pipeline(state)
+      end
     end
   end
+
+  # Non-blocking poll: the worker lives inside one handle_continue, so
+  # GenServer casts would only run after the piece finishes. Raw sends
+  # are picked up here, once per loop iteration (keepalives keep a
+  # stalled peer iterating).
+  defp drain_cancel(state) do
+    receive do
+      {:cancel_piece, index} -> cancel_inflight(state, index)
+    after
+      0 -> {:cont, state}
+    end
+  end
+
+  defp cancel_inflight(%{piece_index: piece} = state, piece) do
+    Enum.reduce_while(state.inflight, :ok, fn {begin, length}, :ok ->
+      case send_message(state.sock, state.socket, %Cancel{
+             index: state.piece_index,
+             begin: begin,
+             length: length
+           }) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      :ok -> {:stop, :normal, state}
+      {:error, reason} -> {:stop, reason, state}
+    end
+  end
+
+  defp cancel_inflight(state, _stale_index), do: {:cont, state}
 
   defp deadline_exceeded?(state) do
     state.clock.monotonic_ms() >= state.deadline_at
@@ -286,12 +332,24 @@ defmodule TorrentClient.PeerWorker do
         # A fresh unchoke re-arms the pipeline: peers may drop requests on
         # choke, and duplicate blocks are idempotent.
         inflight = if match?(%Unchoke{}, message), do: [], else: state.inflight
-        serve(%{state | peer_state: peer_state, inflight: inflight})
+        state = %{state | peer_state: peer_state, inflight: inflight}
+        report_availability(state, message)
+        serve(state)
 
       {:error, reason} ->
         {:stop, reason, state}
     end
   end
+
+  # The coordinator plans rarest-first from these; only bitfield and
+  # Have grow the known set, so only they report.
+  defp report_availability(state, %Bitfield{}),
+    do: report(state, {:availability, self(), PeerState.available_indices(state.peer_state)})
+
+  defp report_availability(state, %Have{}),
+    do: report(state, {:availability, self(), PeerState.available_indices(state.peer_state)})
+
+  defp report_availability(_state, _message), do: :ok
 
   # Only the exact requested slice is accepted: a short or overlapping
   # block would poison the assembly and hang the worker on a sum that can
@@ -301,6 +359,7 @@ defmodule TorrentClient.PeerWorker do
          List.keyfind(state.blocks, begin, 0) == {begin, byte_size(block)} and
          Torrent.validate_block(state.info, index, begin, block) == :ok do
       state = %{state | received: Map.put(state.received, begin, block)}
+      report(state, {:block_progress, index})
       serve(%{state | inflight: List.keydelete(state.inflight, begin, 0)})
     else
       {:stop, :unexpected_piece, state}
@@ -327,12 +386,18 @@ defmodule TorrentClient.PeerWorker do
     case state.disk.write_piece(state.base_dir, state.info, state.piece_index, data) do
       :ok ->
         Logger.debug("Piece #{state.piece_index} verified and written")
+        report(state, {:piece_complete, state.piece_index})
         {:stop, :normal, state}
 
       {:error, reason} ->
         {:stop, {:disk_error, reason}, state}
     end
   end
+
+  # Best-effort upward reports: the coordinator may be gone, and the
+  # worker must never block on it.
+  defp report(%{report_to: nil}, _message), do: :ok
+  defp report(%{report_to: pid}, message), do: send(pid, message)
 
   # Each receive is bounded by the nearer of the per-message timeout and
   # the remaining piece deadline, so a silent peer trips the deadline

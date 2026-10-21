@@ -17,6 +17,7 @@ in `.agents/skills/` and are not tracked here.)
 - Block pipeline: up to 5 outstanding 16 KiB block requests per peer, per-piece deadline that publishes missing blocks for requeue and restarts within supervisor intensity; choke drops in-flight, unchoke re-requests.
 - Bounded whole-announce fan-out: all trackers queried concurrently with peers merged as answers land (deduped, minimum interval kept); resolves within the timeout even when trackers black-hole.
 - HTTP announces carry event/key parameters, honor tracker re-announce intervals, and fail closed on malformed bodies — at parity with the UDP path.
+- Per-torrent coordinator: pure DownloadState plans rarest-first piece allocation, in-flight tracking, and endgame over worker reports (availability, block progress, completion); one supervised subtree per torrent with a stall watchdog (restarts stuck workers, gives up past the budget) and completion reporting; endgame duplicates race and the loser sends Cancel on first completion.
 
 ### Fixed
 
