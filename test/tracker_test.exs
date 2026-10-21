@@ -120,7 +120,7 @@ defmodule TrackerTest do
       body =
         Bento.encode!(%{
           "interval" => 900,
-          "peers" => <<1, 2, 3, 4, 0x1A, 0xE1, 0, 0, 0, 0, 0x1A, 0xE1>>
+          "peers" => <<1, 2, 3, 4, 0x1A, 0xE1, 0, 0, 0, 0, 0x1A, 0xE1, 5, 6, 7, 8, 0, 0>>
         })
 
       assert {:ok, %{peers: peers}} = Tracker.parse_peer_response(body)

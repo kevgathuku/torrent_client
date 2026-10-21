@@ -112,6 +112,7 @@ defmodule PeerTest do
     test "filter_usable/1 keeps only dialable peers" do
       peers = [
         %Peer{ip_tuple: {1, 2, 3, 4}, port: 6881},
+        %Peer{ip_tuple: {1, 2, 3, 4}, port: 0},
         %Peer{ip_tuple: {127, 0, 0, 1}, port: 6881},
         %Peer{ip_tuple: {0, 0, 0, 0, 0, 0, 0, 1}, port: 6881}
       ]

@@ -49,15 +49,21 @@ defmodule Peer do
   def parse_address(_), do: {:error, :unparseable_peer_address}
 
   @doc """
-  Whether the peer's address is worth dialing.
+  Whether the peer is worth dialing.
 
   Drops loopback, unspecified, link-local, and multicast ranges for both
-  families. IPv4-mapped IPv6 addresses are judged by their embedded IPv4
-  address, so `::ffff:127.0.0.1` is still loopback. Private unicast
-  (10/8, 192.168/16, fc00::/7) stays dialable — LAN swarms are real.
+  families, plus peers with no dialable port (0 or out of range — compact
+  ports arrive as a 16-bit field, so only 0 is possible there).
+  IPv4-mapped IPv6 addresses are judged by their embedded IPv4 address,
+  so `::ffff:127.0.0.1` is still loopback. Private unicast (10/8,
+  192.168/16, fc00::/7) stays dialable — LAN swarms are real.
   """
   @spec usable?(t()) :: boolean()
-  def usable?(%__MODULE__{ip_tuple: tuple}), do: usable_tuple?(tuple)
+  def usable?(%__MODULE__{ip_tuple: tuple, port: port}) when port in 1..65_535 do
+    usable_tuple?(tuple)
+  end
+
+  def usable?(%__MODULE__{}), do: false
 
   @doc "Keeps only the dialable peers of the list."
   @spec filter_usable([t()]) :: [t()]
