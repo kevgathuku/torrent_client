@@ -79,6 +79,53 @@ defmodule TrackerTest do
       body = Bento.encode!(%{"peers" => [%{"ip" => "1.2.3.4", "port" => "6881"}]})
       assert {:error, _} = Tracker.parse_peer_response(body)
     end
+
+    test "accepts boundary ports and rejects out-of-range ports" do
+      response = fn port ->
+        Tracker.parse_peer_response(
+          Bento.encode!(%{"peers" => [%{"ip" => "1.2.3.4", "port" => port}]})
+        )
+      end
+
+      assert {:ok, %{peers: [%Peer{port: 1}]}} = response.(1)
+      assert {:ok, %{peers: [%Peer{port: 65_535}]}} = response.(65_535)
+
+      for port <- [0, -1, 65_536] do
+        assert {:error, _} = response.(port), "port #{port} must be rejected"
+      end
+    end
+
+    test "drops unusable addresses instead of returning them" do
+      body =
+        Bento.encode!(%{
+          "interval" => 900,
+          "peers" => [
+            %{"ip" => "1.2.3.4", "port" => 6881},
+            %{"ip" => "127.0.0.1", "port" => 6881},
+            %{"ip" => "224.0.0.1", "port" => 6881},
+            %{"ip" => "::1", "port" => 6881},
+            %{"ip" => "2001:db8::1", "port" => 6881}
+          ]
+        })
+
+      assert {:ok, %{peers: peers}} = Tracker.parse_peer_response(body)
+
+      assert peers == [
+               %Peer{ip_tuple: {1, 2, 3, 4}, port: 6881},
+               %Peer{ip_tuple: {0x2001, 0xDB8, 0, 0, 0, 0, 0, 1}, port: 6881}
+             ]
+    end
+
+    test "drops unusable compact peers" do
+      body =
+        Bento.encode!(%{
+          "interval" => 900,
+          "peers" => <<1, 2, 3, 4, 0x1A, 0xE1, 0, 0, 0, 0, 0x1A, 0xE1, 5, 6, 7, 8, 0, 0>>
+        })
+
+      assert {:ok, %{peers: peers}} = Tracker.parse_peer_response(body)
+      assert peers == [%Peer{ip_tuple: {1, 2, 3, 4}, port: 6881}]
+    end
   end
 
   describe "tracker_url encoding" do

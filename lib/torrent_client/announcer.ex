@@ -116,7 +116,7 @@ defmodule TorrentClient.Announcer do
          {:ok, %{peers: raw_peers, interval: interval}} <-
            UdpTracker.decode_announce(announce_resp, axid, ip_version(family)),
          {:ok, peers} <- Peer.parse_compact(raw_peers, ip_version(family)) do
-      {:ok, %{peers: peers, interval: interval}}
+      {:ok, %{peers: Peer.filter_usable(peers), interval: interval}}
     end
   end
 

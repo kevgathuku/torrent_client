@@ -95,6 +95,19 @@ defmodule TorrentClient.AnnouncerTest do
              :sys.get_state(pid)
   end
 
+  test "unusable udp peers never land in state" do
+    # 1.2.3.4:8080 (usable), 127.0.0.1:8080 (loopback), 0.0.0.0:8080 (unspecified).
+    stub_transport(
+      self(),
+      <<1, 2, 3, 4, 0x1F, 0x90, 127, 0, 0, 1, 0x1F, 0x90, 0, 0, 0, 0, 0x1F, 0x90>>
+    )
+
+    pid = start_worker()
+
+    assert_receive :announced, 1_000
+    assert %{peers: [%Peer{ip_tuple: {1, 2, 3, 4}, port: 8080}]} = :sys.get_state(pid)
+  end
+
   test "http tiers announce through the requests seam" do
     stub_transport(self(), <<>>)
 
