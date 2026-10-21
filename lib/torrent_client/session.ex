@@ -186,8 +186,8 @@ defmodule TorrentClient.Session do
 
   def handle_call({:remove, id_or_path, opts}, _from, state) do
     case find(state, id_or_path) do
-      {:ok, raw, entry} ->
-        case remove_entry(state, raw, entry, opts) do
+      {:ok, _raw, entry} ->
+        case remove_entry(state, entry, opts) do
           {:ok, files, state} -> {:reply, {:ok, entry.id, files}, state}
           {:error, _} = err -> {:reply, err, state}
         end
@@ -421,6 +421,12 @@ defmodule TorrentClient.Session do
 
   # -- lifecycle ---------------------------------------------------------
 
+  # Pausing a complete torrent is a no-op: there is nothing to stop,
+  # and flipping it to :paused would lie in status until resume.
+  defp pause_entry(state, _raw, %{status: :complete}) do
+    state
+  end
+
   defp pause_entry(state, raw, %{sup: nil} = entry) do
     put_in(state.torrents[raw], %{entry | status: :paused})
   end
@@ -453,11 +459,11 @@ defmodule TorrentClient.Session do
 
   # Validate every target before deleting any: a path that no longer
   # resolves inside the download dir aborts the whole removal.
-  defp remove_entry(state, raw, entry, opts) do
+  defp remove_entry(state, entry, opts) do
     case layout_files(entry.base_dir, entry.info) do
       {:ok, files} ->
         targets = [Disk.resume_path(entry.base_dir) | files]
-        delete_targets(state, raw, entry, targets, opts)
+        delete_targets(state, entry, targets, opts)
 
       {:error, _} = err ->
         Logger.error("remove failed #{entry.id}: #{inspect(err)}")
@@ -465,7 +471,7 @@ defmodule TorrentClient.Session do
     end
   end
 
-  defp delete_targets(state, _raw, entry, targets, opts) do
+  defp delete_targets(state, entry, targets, opts) do
     if Keyword.get(opts, :dry_run, false) do
       {:ok, targets, state}
     else

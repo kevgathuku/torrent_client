@@ -190,11 +190,17 @@ defmodule Mix.Tasks.Torrent do
         Enum.each(files, &Mix.shell().info("  #{&1}"))
 
       opts[:yes] || confirmed?(id, files) ->
-        {:ok, ^id, _} = Session.remove(id_or_path)
-        Mix.shell().info("removed #{id} (#{length(files)} file(s))")
+        do_remove(id_or_path, id, files)
 
       true ->
         Mix.shell().info("kept #{id} (still tracked)")
+    end
+  end
+
+  defp do_remove(id_or_path, id, files) do
+    case Session.remove(id_or_path) do
+      {:ok, ^id, _} -> Mix.shell().info("removed #{id} (#{length(files)} file(s))")
+      {:error, reason} -> Mix.raise("remove #{id}: #{inspect(reason)}")
     end
   end
 

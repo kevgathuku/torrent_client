@@ -161,6 +161,7 @@ defmodule TorrentClient.SessionTest do
 
     await_status(session, id, :complete)
     assert {:ok, ^id} = Session.resume(id, session)
+    assert {:ok, ^id} = Session.pause(id, session)
     assert %{status: :complete} = await_status(session, id, :complete, 5_000)
   end
 
