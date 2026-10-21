@@ -152,6 +152,50 @@ defmodule DiskTest do
     assert {:error, _} = Disk.init_layout(base, info)
   end
 
+  test "init_layout rejects symlinked dirs before creating anything", %{base: base} do
+    outside = Path.join(System.tmp_dir!(), "kog7-outside-#{:erlang.unique_integer([:positive])}")
+    File.mkdir_p!(outside)
+    on_exit(fn -> File.rm_rf!(outside) end)
+    File.write!(Path.join(outside, "evil"), "outside")
+
+    File.mkdir_p!(Path.join(base, "t"))
+    File.ln_s!(outside, Path.join(base, "t/sub"))
+
+    info = %{
+      :"piece length" => 4,
+      name: "t",
+      files: [%{path: ["ok"], length: 4}, %{path: ["sub", "f"], length: 4}]
+    }
+
+    assert Disk.init_layout(base, info) == {:error, :symlink_escape}
+    # Sweep runs before any mkdir: the innocent first entry was never created.
+    assert File.ls!(Path.join(base, "t")) == ["sub"]
+    assert File.read!(Path.join(outside, "evil")) == "outside"
+  end
+
+  test "init_layout rejects a symlink at the final file path", %{base: base} do
+    target = Path.join(base, "target")
+    File.write!(target, "target")
+    File.ln_s!(target, Path.join(base, "f.bin"))
+
+    assert Disk.init_layout(base, single_info()) == {:error, :symlink_escape}
+    assert File.read!(target) == "target"
+    assert {:ok, %File.Stat{type: :symlink}} = File.lstat(Path.join(base, "f.bin"))
+  end
+
+  test "write_piece refuses a symlink at the file path", %{base: base} do
+    info = single_info()
+    assert Disk.init_layout(base, info) == :ok
+
+    target = Path.join(base, "target")
+    File.write!(target, "target")
+    File.rm!(Path.join(base, "f.bin"))
+    File.ln_s!(target, Path.join(base, "f.bin"))
+
+    assert Disk.write_piece(base, info, 0, <<1, 2, 3, 4>>) == {:error, :symlink_escape}
+    assert File.read!(target) == "target"
+  end
+
   test "read_piece reports short files instead of returning partial bytes", %{base: base} do
     info = single_info()
     assert Disk.init_layout(base, info) == :ok

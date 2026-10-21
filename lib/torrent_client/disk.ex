@@ -35,16 +35,52 @@ defmodule TorrentClient.Disk do
   @doc """
   Create the download layout: parent dirs plus one file per entry, each
   truncated to its declared size. Existing correct-size files are kept.
+  Pre-existing symlinks under the layout are rejected before anything is
+  created.
   """
   @spec init_layout(Path.t(), map()) :: :ok | {:error, term()}
   @impl true
   def init_layout(base_dir, info) when is_binary(base_dir) and is_map(info) do
-    with {:ok, entries} <- Torrent.layout(info) do
+    with {:ok, entries} <- Torrent.layout(info),
+         :ok <- reject_symlinks(base_dir, entries) do
       init_entries(base_dir, entries)
     end
   end
 
   def init_layout(_base_dir, _info), do: {:error, :invalid_args}
+
+  # Fail before any mkdir/write when an existing component of an entry path
+  # is a symlink: lexical validation cannot see links planted in the download
+  # dir. A concurrent plant still races (confined open needs openat2, which
+  # has no OTP binding); this closes the deterministic path.
+  defp reject_symlinks(base, entries) do
+    Enum.reduce_while(entries, :ok, fn entry, :ok ->
+      if symlinked_below?(base, Path.join(base, entry.path)) do
+        {:halt, {:error, :symlink_escape}}
+      else
+        {:cont, :ok}
+      end
+    end)
+  end
+
+  defp symlinked_below?(base, full) do
+    full
+    |> Path.relative_to(base)
+    |> Path.split()
+    |> Enum.scan(base, &Path.join(&2, &1))
+    |> Enum.any?(&symlink?/1)
+  end
+
+  defp symlink?(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :symlink}} -> true
+      _ -> false
+    end
+  end
+
+  defp refuse_symlink(path) do
+    if symlink?(path), do: {:error, :symlink_escape}, else: :ok
+  end
 
   defp init_entries(base_dir, entries) do
     Enum.reduce_while(entries, :ok, fn entry, :ok ->
@@ -196,8 +232,11 @@ defmodule TorrentClient.Disk do
 
   defp pwrite(path, offset, chunk) do
     # Stat first: open-for-write would create a missing file, but only
-    # init_layout may create files (with declared sizes).
-    with {:ok, _stat} <- File.stat(path),
+    # init_layout may create files (with declared sizes). The symlink gate
+    # keeps a planted link from redirecting the write (same race caveat as
+    # reject_symlinks/2).
+    with :ok <- refuse_symlink(path),
+         {:ok, _stat} <- File.stat(path),
          {:ok, fd} <- :file.open(path, [:read, :write, :binary]) do
       try do
         :file.pwrite(fd, offset, chunk)
