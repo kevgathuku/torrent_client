@@ -19,7 +19,7 @@ defmodule CoordinatorTest do
 
   alias TorrentClient.{Disk, TorrentSupervisor}
 
-  alias PeerMessage.{Bitfield, Cancel, Interested, Piece, Request, Unchoke}
+  alias PeerMessage.{Bitfield, Cancel, Have, Interested, Piece, Request, Unchoke}
 
   @peer_id String.duplicate("C", 20)
   @seed_id String.duplicate("S", 20)
@@ -188,6 +188,13 @@ defmodule CoordinatorTest do
     assert {:error, _} = TorrentSupervisor.start_link(coord_opts(ctx, peers: []))
     assert_receive {:swarm_exhausted, info_hash}, 5_000
     assert info_hash == ctx.info_hash
+    Process.flag(:trap_exit, false)
+  end
+
+  test "non-positive peer cap fails fast instead of stalling silently", ctx do
+    Process.flag(:trap_exit, true)
+    assert {:error, _} = TorrentSupervisor.start_link(coord_opts(ctx, peers: [], max_peers: 0))
+    assert {:error, _} = TorrentSupervisor.start_link(coord_opts(ctx, peers: [], max_peers: "4"))
     Process.flag(:trap_exit, false)
   end
 
@@ -587,6 +594,80 @@ defmodule CoordinatorTest do
     assert_receive {:accepted, ^port2}, 5_000
     assert_receive {:accepted, ^port2}, 5_000
     refute_received {:accepted, _}
+  end
+
+  test "missing is cleared when the peer gains the piece", ctx do
+    # p1 lacks piece 0 at first, so it is recorded missing; while p1
+    # works on piece 2 it announces piece 0 via Have. Only p1 ever holds
+    # piece 0, so without clearing, the swarm would exhaust instead of
+    # completing. Later connections see the gained piece in the
+    # bitfield itself, like a real peer would advertise it.
+    {listen1, port1} = listen!()
+    {listen2, port2} = listen!()
+
+    data = for _ <- 1..3, do: :crypto.strong_rand_bytes(16_384)
+    hashes = Enum.map(data, &:crypto.hash(:sha, &1))
+    info = %{:"piece length" => 16_384, name: "gain.bin", length: 3 * 16_384}
+    :ok = Disk.init_layout(ctx.base, info)
+
+    {:ok, has_zero} = Agent.start_link(fn -> false end)
+    parent = self()
+
+    spawn(fn ->
+      {:ok, sock} = :gen_tcp.accept(listen1, 5_000)
+      # First connection: piece 0 genuinely missing. The worker exits
+      # on the bitfield without requesting (nothing to wait for).
+      seed_greet(sock, ctx.info_hash, <<0b01100000>>)
+      send_message(sock, %Unchoke{})
+      send_message(sock, %PeerMessage.KeepAlive{})
+      {:error, :closed} = :gen_tcp.recv(sock, 0, 10_000)
+      Agent.update(has_zero, fn _ -> true end)
+      gain_loop(listen1, ctx, data, has_zero, parent, port1)
+    end)
+
+    spawn(fn ->
+      {:ok, sock} = :gen_tcp.accept(listen2, 5_000)
+      seed_greet(sock, ctx.info_hash, <<0b01000000>>)
+      serve_all(sock, data)
+    end)
+
+    peers = [
+      %Peer{ip_tuple: {127, 0, 0, 1}, port: port1},
+      %Peer{ip_tuple: {127, 0, 0, 1}, port: port2}
+    ]
+
+    start_sup_unlinked(coord_opts(ctx, peers: peers, info: info, piece_hashes: hashes))
+
+    pid = coord_pid(ctx.info_hash)
+    ref = Process.monitor(pid)
+
+    assert_receive {:torrent_complete, _}, 15_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 15_000
+    assert {:ok, Enum.at(data, 0)} == Disk.read_piece(ctx.base, info, 0)
+    assert {:ok, Enum.at(data, 1)} == Disk.read_piece(ctx.base, info, 1)
+    assert {:ok, Enum.at(data, 2)} == Disk.read_piece(ctx.base, info, 2)
+  end
+
+  # Serves every request instantly. The bitfield reflects whether the
+  # peer has gained piece 0 yet; mid-download Have announcements
+  # exercise the coordinator's missing-cleared path.
+  defp gain_loop(listen, ctx, data, has_zero, parent, port) do
+    case :gen_tcp.accept(listen, 5_000) do
+      {:ok, sock} ->
+        send(parent, {:accepted, port})
+
+        spawn(fn ->
+          bits = if Agent.get(has_zero, & &1), do: <<0b11100000>>, else: <<0b01100000>>
+          seed_greet(sock, ctx.info_hash, bits)
+          if Agent.get(has_zero, & &1), do: send_message(sock, %Have{index: 0})
+          serve_all(sock, data)
+        end)
+
+        gain_loop(listen, ctx, data, has_zero, parent, port)
+
+      {:error, _} ->
+        :ok
+    end
   end
 
   defp accept_count_loop(listen, ctx, parent, port) do

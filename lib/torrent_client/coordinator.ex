@@ -64,6 +64,25 @@ defmodule TorrentClient.Coordinator do
 
   @impl true
   def init(opts) do
+    case validate_opts(opts) do
+      :ok -> init_state(opts)
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  # Trust boundary for our own options: a non-positive peer cap would
+  # silently stall forever (try_assign never fires, exhaustion never
+  # triggers because assignment stays possible). Other numeric budgets
+  # fail loudly on their own (timeouts, give-ups), so only this one
+  # needs a guard.
+  defp validate_opts(opts) do
+    case Keyword.get(opts, :max_peers, @default_max_peers) do
+      n when is_integer(n) and n >= 1 -> :ok
+      bad -> {:error, {:invalid_max_peers, bad}}
+    end
+  end
+
+  defp init_state(opts) do
     piece_hashes = Keyword.fetch!(opts, :piece_hashes)
     now = clock(opts).monotonic_ms()
 
@@ -129,7 +148,17 @@ defmodule TorrentClient.Coordinator do
     state =
       case Map.fetch(state.workers, pid) do
         {:ok, %{peer: peer}} ->
-          %{state | availability: Map.put(state.availability, peer_key(peer), available)}
+          key = peer_key(peer)
+          # A peer that gains pieces (Have) stops missing them: drop
+          # covered indices so the piece becomes assignable again.
+          missing =
+            Map.update(state.missing, key, MapSet.new(), &MapSet.difference(&1, available))
+
+          %{
+            state
+            | availability: Map.put(state.availability, key, available),
+              missing: missing
+          }
 
         :error ->
           state
