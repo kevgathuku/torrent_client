@@ -71,11 +71,16 @@ defmodule TorrentClient.Announcer do
         state = %{state | tier_state: tier_state}
 
         case announce(state, url) do
-          {:ok, peers} ->
+          {:ok, %{peers: peers, interval: interval}} ->
             {:ok, tier_state} = TierState.report(tier_state, :ok, url)
 
-            {%{state | tier_state: tier_state, peers: peers, started: true, failures: 0},
-             state.interval_ms}
+            {%{
+               state
+               | tier_state: tier_state,
+                 peers: peers,
+                 started: true,
+                 failures: 0
+             }, max(state.interval_ms, interval * 1_000)}
 
           {:error, _} ->
             {:ok, tier_state} = TierState.report(tier_state, :error, url)
@@ -103,9 +108,10 @@ defmodule TorrentClient.Announcer do
          {:ok, announce_req} <- UdpTracker.encode_announce(announce_params(state, conn, axid)),
          {:ok, %{family: family, data: announce_resp}} <-
            state.udp.send_recv(host, port, announce_req, 5_000),
-         {:ok, %{peers: peers}} <-
-           UdpTracker.decode_announce(announce_resp, axid, ip_version(family)) do
-      Peer.parse_compact(peers, ip_version(family))
+         {:ok, %{peers: raw_peers, interval: interval}} <-
+           UdpTracker.decode_announce(announce_resp, axid, ip_version(family)),
+         {:ok, peers} <- Peer.parse_compact(raw_peers, ip_version(family)) do
+      {:ok, %{peers: peers, interval: interval}}
     end
   end
 
@@ -130,10 +136,14 @@ defmodule TorrentClient.Announcer do
   end
 
   defp http_announce(state, url) do
-    full_url = Tracker.tracker_url(url, state.bento, state.info_hash, state.peer_id, state.port)
+    full_url =
+      Tracker.tracker_url(url, state.bento, state.info_hash, state.peer_id, state.port,
+        event: if(state.started, do: nil, else: "started"),
+        key: Integer.to_string(state.key)
+      )
 
     case RequestsClient.get_peers(full_url) do
-      {:ok, %{peers: peers}} -> {:ok, peers}
+      {:ok, %{peers: _} = response} -> {:ok, response}
       {:error, _} = error -> error
     end
   end

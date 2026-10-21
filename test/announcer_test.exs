@@ -50,7 +50,7 @@ defmodule TorrentClient.AnnouncerTest do
     start_supervised!({TorrentClient.Announcer, opts})
   end
 
-  defp stub_transport(test_pid, peers, family \\ :inet) do
+  defp stub_transport(test_pid, peers, family \\ :inet, interval \\ 0) do
     TorrentClient.UdpMock
     |> stub(:send_recv, fn
       _host, _port, <<0x41727101980::64-big, _action::32-big, xid::32-big>>, _timeout ->
@@ -62,7 +62,7 @@ defmodule TorrentClient.AnnouncerTest do
         {:ok,
          %{
            family: family,
-           data: <<1::32-big, xid::32-big, 60::32-big, 0::32-big, 1::32-big, peers::binary>>
+           data: <<1::32-big, xid::32-big, interval::32-big, 0::32-big, 1::32-big, peers::binary>>
          }}
     end)
   end
@@ -141,6 +141,14 @@ defmodule TorrentClient.AnnouncerTest do
     # Tier 1 is HTTP (requests seam mock returns 5 peers); UDP tier never dialed.
     assert %{peers: peers} = :sys.get_state(pid)
     assert length(peers) == 5
+  end
+
+  test "tracker interval stretches the re-announce delay" do
+    stub_transport(self(), <<>>, :inet, 3600)
+    start_worker()
+
+    assert_receive :announced, 1_000
+    refute_receive :announced, 200
   end
 
   test "exhausted tiers reset for the next cycle" do

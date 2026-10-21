@@ -6,8 +6,8 @@ defmodule Tracker do
   @doc """
   Returns the Tracker URL with correctly encoded params
   """
-  def tracker_url(base_url, bento_torrent, info_hash, peer_id, port) do
-    query =
+  def tracker_url(base_url, bento_torrent, info_hash, peer_id, port, opts \\ []) do
+    params =
       %{
         info_hash: Base.decode16!(info_hash),
         peer_id: peer_id,
@@ -19,10 +19,15 @@ defmodule Tracker do
         compact: "1",
         left: Torrent.remaining(bento_torrent)
       }
+      |> maybe_put(:event, Keyword.get(opts, :event))
+      |> maybe_put(:key, Keyword.get(opts, :key))
       |> Enum.map_join("&", fn {key, value} -> "#{key}=#{encode_param(to_string(value))}" end)
 
-    "#{base_url}?#{query}"
+    "#{base_url}?#{params}"
   end
+
+  defp maybe_put(params, _key, nil), do: params
+  defp maybe_put(params, key, value), do: Map.put(params, key, value)
 
   # Byte-wise percent-encoding (RFC 3986): default query encoders render
   # space as `+`, corrupting binary hashes that contain 0x20.
@@ -37,15 +42,20 @@ defmodule Tracker do
   end
 
   def parse_peer_response(body) do
-    case Bento.decode!(body) do
-      %{"failure reason" => reason} ->
+    case Bento.decode(body) do
+      {:ok, %{"failure reason" => reason}} ->
         {:error, reason}
 
-      decoded when is_map(decoded) ->
-        parse_peers(decoded)
+      {:ok, decoded} when is_map(decoded) ->
+        with {:ok, peers} <- parse_peers(decoded) do
+          {:ok, %{peers: peers, interval: response_interval(decoded)}}
+        end
 
-      _ ->
+      {:ok, _} ->
         {:error, "Unknown response from tracker"}
+
+      {:error, _} ->
+        {:error, :malformed_response}
     end
   end
 
@@ -53,12 +63,19 @@ defmodule Tracker do
     if Map.has_key?(decoded, "peers") or Map.has_key?(decoded, "peers6") do
       with {:ok, v4} <- parse_family(decoded, "peers", :ipv4),
            {:ok, v6} <- parse_family(decoded, "peers6", :ipv6) do
-        {:ok, %{peers: v4 ++ v6}}
+        {:ok, v4 ++ v6}
       end
     else
       {:error, "Unknown response from tracker"}
     end
   end
+
+  # Tracker-supplied re-announce interval in seconds; 0 means "use our own".
+  defp response_interval(%{"interval" => interval}) when is_integer(interval) and interval >= 0 do
+    interval
+  end
+
+  defp response_interval(_decoded), do: 0
 
   defp parse_family(decoded, key, family) do
     case Map.get(decoded, key) do

@@ -91,5 +91,32 @@ defmodule TrackerTest do
       assert String.contains?(url, "h=%20%FF")
       refute String.contains?(url, "h=+")
     end
+
+    test "event and key ride along when given" do
+      {:ok, bento, _info} = TestHelpers.single_file_torrent() |> Downloader.parse_torrent_file()
+
+      url =
+        Tracker.tracker_url(bento.announce, bento, Base.encode16(<<1>>), "peer", 6881,
+          event: "started",
+          key: "42"
+        )
+
+      assert String.contains?(url, "event=started")
+      assert String.contains?(url, "key=42")
+    end
+
+    test "event and key are absent by default" do
+      {:ok, bento, _info} = TestHelpers.single_file_torrent() |> Downloader.parse_torrent_file()
+      url = Tracker.tracker_url(bento.announce, bento, Base.encode16(<<1>>), "peer", 6881)
+
+      refute String.contains?(url, "event=")
+      refute String.contains?(url, "key=")
+    end
+  end
+
+  describe "hostile responses" do
+    test "garbage bytes are an error, not a crash" do
+      assert {:error, _} = Tracker.parse_peer_response(<<0xFF, 0x00, 0xDE, 0xAD>>)
+    end
   end
 end
