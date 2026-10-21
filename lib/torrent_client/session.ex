@@ -389,6 +389,10 @@ defmodule TorrentClient.Session do
 
   defp announce(state, entry, urls) do
     query = fn url ->
+      # Logged before the call so blackholed trackers show up as
+      # pending queries, not silence, when the fan-out times out.
+      Logger.debug("querying tracker #{url}")
+
       outcome =
         Announcer.query_once(url,
           bento: entry.bento,
