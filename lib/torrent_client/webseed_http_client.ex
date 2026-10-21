@@ -75,7 +75,7 @@ defmodule TorrentClient.WebseedHttpClient do
     end
   end
 
-  defp handle_response(ref, _url, _headers, _left, _limit, status, resp_headers)
+  defp handle_response(ref, _url, _headers, _left, _limit, status, _resp_headers)
        when status in @redirect_statuses do
     stop(ref)
     {:error, :too_many_redirects}

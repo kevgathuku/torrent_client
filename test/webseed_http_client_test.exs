@@ -82,21 +82,25 @@ defmodule WebseedHttpStub do
     ])
   end
 
-  # Sends `n` 16 KiB chunks with a delay between them; returns the
-  # bytes the client actually accepted before going away.
-  def drip(_sock, 0, _test), do: 0
+  # Sends `n` 16 KiB chunks with a delay between them, then reports
+  # whether the client went away mid-stream. Byte counts are
+  # deliberately not asserted: loopback kernel buffers accept sends
+  # long after the client closed, so only the close itself is signal.
+  def drip(sock, n, test), do: drip(sock, n, test, 0)
 
-  def drip(sock, n, test) do
+  defp drip(_sock, 0, _test, _sent), do: :drained
+
+  defp drip(sock, n, test, sent) do
     chunk = :crypto.strong_rand_bytes(16_384)
     Process.sleep(50)
 
     case :gen_tcp.send(sock, chunk) do
       :ok ->
-        byte_size(chunk) + drip(sock, n - 1, test)
+        drip(sock, n - 1, test, sent + byte_size(chunk))
 
       {:error, _} ->
-        send(test, :client_went_away)
-        0
+        send(test, {:client_went_away, :closed})
+        :closed_early
     end
   end
 end
@@ -168,8 +172,7 @@ defmodule WebseedHttpClientTest do
     stub =
       WebseedHttpStub.start(fn sock, _port, _path, _headers ->
         WebseedHttpStub.respond(sock, 200, [{"content-length", "8388608"}], "")
-        sent = WebseedHttpStub.drip(sock, 512, test)
-        send(test, {:sent_before_close, sent})
+        WebseedHttpStub.drip(sock, 512, test)
       end)
 
     on_exit(fn -> WebseedHttpStub.stop(stub) end)
@@ -180,10 +183,15 @@ defmodule WebseedHttpClientTest do
              WebseedHttpClient.get(base(stub) <> "/big", [{"range", "bytes=0-1023"}])
 
     # Draining 8 MiB at 16 KiB per 50 ms would take ~25 s; an early abort
-    # returns in a fraction of that.
+    # returns in a fraction of that, and the server observes the close
+    # instead of draining.
     assert System.monotonic_time(:millisecond) - t0 < 5_000
-    assert_receive {:sent_before_close, sent}, 30_000
-    assert sent < 1_048_576
+
+    receive do
+      {:client_went_away, _} -> :ok
+    after
+      30_000 -> flunk("server never observed the close")
+    end
   end
 
   test "redirect loops fail closed" do
