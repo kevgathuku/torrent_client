@@ -7,9 +7,9 @@
 # unreachable (prints what happened instead of crashing).
 require Logger
 
-[torrent_filename, download_dir | _] =
-  System.argv() ++
-    ["test/_data/debian-12.1.0-amd64-netinst.iso.torrent", Path.join(System.tmp_dir!(), "smoke")]
+args = System.argv()
+torrent_filename = Enum.at(args, 0, "test/_data/debian-12.1.0-amd64-netinst.iso.torrent")
+download_dir = Enum.at(args, 1, Path.join(System.tmp_dir!(), "smoke"))
 
 unless File.exists?(torrent_filename) do
   raise "torrent file not found: #{torrent_filename}"
