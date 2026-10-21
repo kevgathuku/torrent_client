@@ -321,10 +321,39 @@ defmodule TorrentClient.SessionTest do
     assert {:error, :not_found} = Session.remove("nope", [], session)
   end
 
-  test "terminal reports update status; unknown and skipped reports are ignored", %{
-    session: session,
-    tmp: tmp
-  } do
+  test "per-add announce timeout bounds a hanging tracker", %{sup: sup, tmp: tmp} do
+    {:ok, hang} = :gen_udp.open(0, [:binary])
+    {:ok, hang_port} = :inet.port(hang)
+    on_exit(fn -> :gen_udp.close(hang) end)
+
+    # No session-level timeout: the 10 s default would apply without the fix.
+    name = :"timeout_#{:erlang.unique_integer([:positive])}"
+
+    session =
+      start_supervised!(
+        Supervisor.child_spec(
+          {Session, [name: name, supervisor: sup, max_peers: 2]},
+          id: name
+        )
+      )
+
+    {path, _info, _data} = craft(tmp, "hto", 1, "udp://127.0.0.1:#{hang_port}/announce")
+    base = Path.join(tmp, "hto")
+    started = System.monotonic_time(:millisecond)
+
+    assert {:ok, id} =
+             Session.add_torrent(path, [base_dir: base, announce_timeout: 50], session)
+
+    assert %{status: :exhausted} = TorrentSeeds.await_status(session, id, :exhausted, 5_000)
+    assert System.monotonic_time(:millisecond) - started < 4_000
+  end
+
+  test "terminal reports stop the subtree and update status; unknown and skipped reports are ignored",
+       %{
+         session: session,
+         sup: sup,
+         tmp: tmp
+       } do
     {path, _info, _data} = craft(tmp, "rep", 1)
     base = Path.join(tmp, "rep")
 
@@ -339,6 +368,10 @@ defmodule TorrentClient.SessionTest do
 
     send(session, {:swarm_exhausted, raw})
     assert %{status: :exhausted} = TorrentSeeds.await_status(session, id, :exhausted, 5_000)
+    # The lingering supervisor is gone: names freed, nothing dialing.
+    assert [] = DynamicSupervisor.which_children(sup)
+    assert [] = Registry.lookup(TorrentClient.Registry, {raw, :coordinator})
+    assert [] = Registry.lookup(TorrentClient.Registry, {raw, :peer_sup})
 
     # Reports for forgotten torrents are dropped, never crash.
     send(session, {:torrent_complete, :crypto.strong_rand_bytes(20)})

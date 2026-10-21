@@ -107,10 +107,14 @@ Logger.info("layout ready under #{download_dir}")
 # announces.
 peer_id = Utils.generate_peer_id()
 
+# query_once dispatches UDP vs HTTP(S) per URL so mixed tiers work.
 query = fn url ->
-  url
-  |> Tracker.tracker_url(bento, info_hash, peer_id, 6881)
-  |> TorrentClient.Requests.Client.get_peers()
+  TorrentClient.Announcer.query_once(url,
+    bento: bento,
+    info_hash: info_hash,
+    peer_id: peer_id,
+    port: 6881
+  )
 end
 
 tracker_urls = bento |> Torrent.announce_tiers() |> List.flatten()

@@ -209,6 +209,11 @@ defmodule TorrentClient.Session do
 
     case Map.fetch(state.torrents, raw) do
       {:ok, entry} ->
+        # The coordinator is gone but its supervisor (and peer workers)
+        # lingers: stop the subtree so the Registry names free up for
+        # resume and nothing keeps dialing after the terminal report.
+        stop_sup(state, entry)
+
         case report do
           :torrent_complete -> Logger.info("Torrent #{entry.id} complete")
           _ -> Logger.warning("Torrent #{entry.id} #{report}")
@@ -284,6 +289,7 @@ defmodule TorrentClient.Session do
         info: bento.info,
         bento: bento,
         peers: static_peers,
+        announce_timeout: Keyword.get(opts, :announce_timeout, state.announce_timeout),
         sup: nil,
         status: :downloading
       }
@@ -388,6 +394,8 @@ defmodule TorrentClient.Session do
   end
 
   defp announce(state, entry, urls) do
+    timeout = entry.announce_timeout
+
     query = fn url ->
       # Logged before the call so blackholed trackers show up as
       # pending queries, not silence, when the fan-out times out.
@@ -406,7 +414,7 @@ defmodule TorrentClient.Session do
       outcome
     end
 
-    case Announcer.announce_all(urls, query, timeout: state.announce_timeout) do
+    case Announcer.announce_all(urls, query, timeout: timeout) do
       {:ok, %{peers: peers}} ->
         Logger.debug("announce for #{entry.id}: #{length(peers)} peers")
         peers
@@ -446,10 +454,14 @@ defmodule TorrentClient.Session do
 
   defp resume_entry(state, raw, entry) do
     # Restart through the normal path so resume bytes reload; drop the
-    # stale entry first so the new one replaces it. Static peers carry
-    # over, otherwise the swarm is re-announced.
+    # stale entry first so the new one replaces it. Static peers and the
+    # announce timeout carry over, otherwise the swarm is re-announced
+    # with different knobs.
     state = %{state | torrents: Map.delete(state.torrents, raw)}
-    opts = [base_dir: entry.base_dir] ++ if(entry.peers, do: [peers: entry.peers], else: [])
+
+    opts =
+      [base_dir: entry.base_dir, announce_timeout: entry.announce_timeout] ++
+        if(entry.peers, do: [peers: entry.peers], else: [])
 
     case start_torrent(state, entry.path, opts) do
       {:ok, _id, state} -> {:ok, entry.id, state}

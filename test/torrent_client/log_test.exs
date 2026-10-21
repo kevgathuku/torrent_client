@@ -35,7 +35,8 @@ defmodule TorrentClient.LogTest do
   end
 
   test "setup rejects a non-binary path" do
-    assert_raise FunctionClauseError, fn -> Log.setup(nil) end
+    bad = Enum.at([nil], 0)
+    assert_raise FunctionClauseError, fn -> Log.setup(bad) end
   end
 
   defp poll_file(path, marker) do
