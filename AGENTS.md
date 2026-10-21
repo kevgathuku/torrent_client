@@ -60,6 +60,12 @@ mix dialyzer             # type analysis; first run builds the PLT and is slow
 - Dependencies in [mix.exs](mix.exs): `credo` and `dialyxir` are dev/test-only;
   keep runtime deps minimal — a new hex package needs justification.
 
+## Changelog
+
+- [CHANGELOG.md](CHANGELOG.md) follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/):
+  user-facing product changes only (`Added` / `Fixed` / ...). Test scaffolding,
+  quality gates, and agent-process changes are never entries.
+
 ## Non-Interactive Shell Commands
 
 **ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
