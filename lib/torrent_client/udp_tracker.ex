@@ -5,6 +5,10 @@ defmodule TorrentClient.UdpTracker do
   big-endian; malformed packets are `{:error, reason}`, never a crash.
   """
 
+  # BEP-15 fixed connection_id for the initial connect request. UDP has no
+  # handshake, so the tracker replies with a per-client connection_id to echo
+  # in announce/scrape (return-routability check). Value is an arbitrary
+  # protocol-frozen cookie; changing it breaks interop.
   @magic 0x41727101980
 
   @doc "Encode a connect request for the given transaction id."
