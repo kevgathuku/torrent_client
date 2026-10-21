@@ -19,6 +19,8 @@ defmodule AnnounceFanoutTest do
         {:error, reason} -> {:error, reason}
         {:sleep, ms} -> Process.sleep(ms)
         {:raise} -> raise "tracker blew up"
+        {:exit, reason} -> exit(reason)
+        {:throw, value} -> throw(value)
       end
     end
   end
@@ -86,6 +88,20 @@ defmodule AnnounceFanoutTest do
       })
 
     assert {:ok, %{peers: [peer]}} = Announcer.announce_all(["boom", "fine"], query, timeout: 500)
+    assert peer == peer(9, 9, 9, 9)
+  end
+
+  test "exiting and throwing trackers count as failed trackers" do
+    query =
+      query_script(%{
+        "gone" => {:exit, :crashed},
+        "thrown" => {:throw, :oops},
+        "fine" => {:peers, [peer(9, 9, 9, 9)], 900}
+      })
+
+    assert {:ok, %{peers: [peer]}} =
+             Announcer.announce_all(["gone", "thrown", "fine"], query, timeout: 500)
+
     assert peer == peer(9, 9, 9, 9)
   end
 

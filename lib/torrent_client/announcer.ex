@@ -187,15 +187,17 @@ defmodule TorrentClient.Announcer do
     |> finalize()
   end
 
-  # A raising query must fail like any dead tracker, not take the caller
-  # down with it. Only exceptions are caught: timeout kills and exits
-  # still propagate.
+  # A failing query must fail like any dead tracker, not take the caller
+  # down with it. Exceptions, exits, and throws are caught; timeout :kill
+  # signals bypass the clause and keep their existing behavior.
   defp safe(query) do
     fn url ->
       try do
         query.(url)
       rescue
         _ -> {:error, :query_failed}
+      catch
+        _, _ -> {:error, :query_failed}
       end
     end
   end
