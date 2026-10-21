@@ -38,8 +38,7 @@ defmodule Peer do
   forms. Hostnames are an error — this path never touches DNS, so a
   tracker can neither stall nor redirect us through resolution.
   """
-  @spec parse_address(String.t()) ::
-          {:ok, :inet.ip_address()} | {:error, :unparseable_peer_address}
+  @spec parse_address(term()) :: {:ok, :inet.ip_address()} | {:error, :unparseable_peer_address}
   def parse_address(ip) when is_binary(ip) do
     case :inet.parse_address(String.to_charlist(ip)) do
       {:ok, tuple} -> {:ok, tuple}
