@@ -35,11 +35,11 @@ jobs:
         restore-keys: ${{ runner.os }}-mix-
     - name: Install dependencies
       run: mix deps.get
-    - name: Run tests
-      run: mix test --cover
-    # Posts to coveralls.io (token from the repo secret); the 80% gate
-    # above stays the single threshold (mix.exs + coveralls.json).
-    - name: Post coverage to Coveralls
+    # Single suite run: posts to coveralls.io (token from the repo
+    # secret) and enforces the 80% gate via minimum_coverage. Set the
+    # same 80% threshold in the coveralls.io project settings so the
+    # commit status fails below it; mix.exs keeps the local gate.
+    - name: Run tests and post coverage to Coveralls
       run: mix coveralls.post
       env:
         MIX_ENV: test

@@ -1,5 +1,7 @@
 # TorrentClient
 
+[![Coverage Status](https://coveralls.io/repos/github/kevgathuku/torrent_client/badge.svg?branch=main)](https://coveralls.io/github/kevgathuku/torrent_client?branch=main)
+
 A simple Elixir torrent client, based on [Building a BitTorrent client from the ground up in Go](https://blog.jse.li/posts/torrent/)
 
 ## Installation
