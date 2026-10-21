@@ -973,6 +973,46 @@ defmodule CoordinatorTest do
     assert {:ok, data1} == Disk.read_piece(ctx.base, ctx.info, 1)
   end
 
+  test "a failing silent peer yields to webseed after one attempt", ctx do
+    parent = self()
+    {listen, port} = listen!()
+    [data0, data1] = ctx.data
+
+    spawn(fn ->
+      refuse_loop(listen, parent, 0)
+    end)
+
+    # Order-independent: both piece workers race to the mock.
+    TorrentClient.WebseedHttpMock
+    |> expect(:get, 2, fn "https://x/c.bin", [{"range", range}] ->
+      body =
+        case range do
+          "bytes=0-32767" -> data0
+          "bytes=32768-65535" -> data1
+        end
+
+      {:ok, %Tesla.Env{status: 206, body: body}}
+    end)
+
+    peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
+    start_sup_unlinked(webseed_opts(ctx, peers: peers))
+
+    pid = coord_pid(ctx.info_hash)
+    ref = Process.monitor(pid)
+
+    assert_receive {:torrent_complete, info_hash}, 15_000
+    assert info_hash == ctx.info_hash
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 15_000
+
+    # One optimistic dial, then the working source takes every slot.
+    assert_received :refused
+    Process.sleep(300)
+    refute_received :refused
+
+    assert {:ok, data0} == Disk.read_piece(ctx.base, ctx.info, 0)
+    assert {:ok, data1} == Disk.read_piece(ctx.base, ctx.info, 1)
+  end
+
   test "dead peer supervisor fails webseed starts and stalls out", ctx do
     # start_child on a dead supervisor exits; the coordinator must stay
     # up and stall out instead of crashing with it.

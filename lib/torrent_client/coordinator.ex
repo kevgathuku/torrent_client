@@ -54,7 +54,9 @@ defmodule TorrentClient.Coordinator do
   `:refill_peers` (0-arity fun returning fresh `[%Peer{}]`; called once
   when the swarm exhausts before giving up for real), `:webseed_urls`
   (BEP-19 base URLs, last resort when no idle peer holds a piece; empty
-  disables), `:webseed_http` (default `TorrentClient.WebseedHttpClient`),
+  disables. A peer that failed without ever reporting availability yields
+  to webseed — one optimistic dial each, then the working source wins),
+  `:webseed_http` (default `TorrentClient.WebseedHttpClient`),
   `:max_peers`
   (default #{@default_max_peers}), `:max_inflight`, `:watchdog_timeout`
   ms, `:max_stalls`, `:max_peer_failures`, `:recv_timeout`/
@@ -412,7 +414,22 @@ defmodule TorrentClient.Coordinator do
 
     not MapSet.member?(Map.get(state.missing, key, MapSet.new()), index) and
       (not Map.has_key?(state.availability, key) or
-         MapSet.member?(state.availability[key], index))
+         MapSet.member?(state.availability[key], index)) and
+      not demoted?(state, key, index)
+  end
+
+  # A peer that already failed without ever reporting a byte spent its
+  # optimistic chance: while a webseed can serve this piece, the worker
+  # slot goes to the source that moves. Reported holders keep priority;
+  # without webseeds, or once the webseed is skipped for this piece, the
+  # peer is eligible again.
+  defp demoted?(state, key, index) do
+    Map.get(state.failures, key, 0) >= 1 and not Map.has_key?(state.availability, key) and
+      webseed_viable?(state, index)
+  end
+
+  defp webseed_viable?(state, index) do
+    state.webseed_urls != [] and not MapSet.member?(state.skipped, {:webseed, index})
   end
 
   # Prefer reported holders over optimistic unknowns; both peer-ordered.
