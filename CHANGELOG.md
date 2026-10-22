@@ -25,6 +25,8 @@ in `.agents/skills/` and are not tracked here.)
 
 ### Fixed
 
+- Crash-restarted downloads keep the pieces they already published: the coordinator reseeds its verified set from the torrent's `.resume` file instead of the stale start opts, and give-up reports carry verified/total so `Session.status/1` and `mix torrent status` show the progress that survived. In-flight block loss (kog.33) is unchanged.
+
 - Piece-hash slicing aligned to 20-byte boundaries past the first piece (every later piece verified against the wrong hash, so multi-piece downloads stalled on endless mismatches).
 - HTTP tracker URLs percent-encode binary fields byte-wise (was space-as-`+`, corrupting info-hashes containing `0x20`).
 

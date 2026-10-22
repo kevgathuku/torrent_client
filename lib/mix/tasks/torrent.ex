@@ -147,7 +147,9 @@ defmodule Mix.Tasks.Torrent do
       end
 
     Enum.each(entries, fn entry ->
-      Mix.shell().info("#{entry.id}  #{entry.status}  #{entry.path}  -> #{entry.base_dir}")
+      Mix.shell().info(
+        "#{entry.id}  #{entry.status}  #{entry.verified}/#{entry.total}  #{entry.path}  -> #{entry.base_dir}"
+      )
     end)
   end
 

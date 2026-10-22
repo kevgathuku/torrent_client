@@ -14,6 +14,11 @@ defmodule TorrentClient.Session do
   distrusted on load — identity (hash, total, piece length) must match the
   torrent or the verified set is dropped. Addressing is exact hex id
   first, unique id prefix second, torrent path third.
+
+  Terminal reports from a torrent's coordinator stop the subtree and set
+  the entry's status; give-up reports also carry the verified/total
+  progress the attempt published, so an exhausted entry (and `status/1`)
+  shows what survived a crash.
   """
 
   use GenServer
@@ -75,9 +80,16 @@ defmodule TorrentClient.Session do
     GenServer.call(server, {:remove, id_or_path, opts})
   end
 
-  @doc "Every known torrent: id, path, download dir, and lifecycle status."
+  @doc "Every known torrent: id, path, download dir, lifecycle status, and last published progress."
   @spec status(GenServer.server()) :: [
-          %{id: torrent_id(), path: Path.t(), base_dir: Path.t(), status: status()}
+          %{
+            id: torrent_id(),
+            path: Path.t(),
+            base_dir: Path.t(),
+            status: status(),
+            verified: non_neg_integer(),
+            total: non_neg_integer()
+          }
         ]
   def status(server \\ __MODULE__) do
     GenServer.call(server, :status)
@@ -175,7 +187,7 @@ defmodule TorrentClient.Session do
   def handle_call(:status, _from, state) do
     entries =
       Enum.map(state.torrents, fn {_raw, entry} ->
-        Map.take(entry, [:id, :path, :base_dir, :status])
+        Map.take(entry, [:id, :path, :base_dir, :status, :verified, :total])
       end)
 
     {:reply, entries, state}
@@ -199,8 +211,23 @@ defmodule TorrentClient.Session do
   end
 
   @impl true
+  def handle_info({report, raw, progress}, state)
+      when report in [:torrent_complete, :swarm_exhausted, :download_stalled] do
+    handle_report(state, raw, report, progress)
+  end
+
+  # Older/other senders report bare tuples: keep them working, just
+  # without progress (the entry keeps whatever it published before).
   def handle_info({report, raw}, state)
       when report in [:torrent_complete, :swarm_exhausted, :download_stalled] do
+    handle_report(state, raw, report, nil)
+  end
+
+  def handle_info({:peer_skipped, _peer}, state) do
+    {:noreply, state}
+  end
+
+  defp handle_report(state, raw, report, progress) do
     status =
       case report do
         :torrent_complete -> :complete
@@ -220,6 +247,8 @@ defmodule TorrentClient.Session do
           _ -> Logger.warning("Torrent #{entry.id} #{report}")
         end
 
+        entry = publish_progress(entry, report, progress)
+
         {:noreply,
          %{state | torrents: Map.put(state.torrents, raw, %{entry | status: status, sup: nil})}}
 
@@ -228,9 +257,16 @@ defmodule TorrentClient.Session do
     end
   end
 
-  def handle_info({:peer_skipped, _peer}, state) do
-    {:noreply, state}
+  # Keep the progress the crashed attempt published: a give-up report
+  # carries its verified/total so an exhausted entry can show it. A
+  # completion implies everything.
+  defp publish_progress(entry, :torrent_complete, _progress), do: %{entry | verified: entry.total}
+
+  defp publish_progress(entry, _report, %{verified: verified, total: total}) do
+    %{entry | verified: verified, total: total}
   end
+
+  defp publish_progress(entry, _report, _progress), do: entry
 
   # -- startup -----------------------------------------------------------
 
@@ -279,7 +315,13 @@ defmodule TorrentClient.Session do
          hashes when is_list(hashes) <- Torrent.get_piece_hashes(bento),
          base_dir = Keyword.get(opts, :base_dir, Path.basename(path, ".torrent")),
          :ok <- state.disk.init_layout(base_dir, bento.info) do
-      verified = load_verified(state, base_dir, raw, length(hashes), piece_length(bento.info))
+      verified =
+        Disk.load_verified(state.disk, base_dir, %{
+          info_hash: raw,
+          total: length(hashes),
+          piece_length: piece_length(bento.info)
+        })
+
       static_peers = Keyword.get(opts, :peers)
 
       entry = %{
@@ -293,7 +335,9 @@ defmodule TorrentClient.Session do
         webseed_urls: Torrent.url_list(bytes),
         announce_timeout: Keyword.get(opts, :announce_timeout, state.announce_timeout),
         sup: nil,
-        status: :downloading
+        status: :downloading,
+        verified: length(verified),
+        total: length(hashes)
       }
 
       if length(verified) == length(hashes) do
@@ -348,37 +392,6 @@ defmodule TorrentClient.Session do
 
   defp check_new(state, raw) do
     if Map.has_key?(state.torrents, raw), do: {:error, :already_added}, else: :ok
-  end
-
-  # Resume bytes are hostile input: the identity must match the torrent
-  # on every field or the verified set is dropped, never trusted.
-  defp load_verified(state, base_dir, raw, total, plen) do
-    path = Disk.resume_path(base_dir)
-
-    case state.disk.read(path) do
-      {:error, :enoent} ->
-        Logger.debug("no resume at #{path}")
-        []
-
-      {:ok, bytes} ->
-        case Disk.decode_resume(bytes) do
-          {:ok, %{info_hash: ^raw, verified: indices, total: ^total, piece_length: ^plen}} ->
-            Logger.debug("resume at #{path}: #{length(indices)}/#{total} verified")
-            indices
-
-          {:ok, _} ->
-            Logger.warning("ignoring resume with mismatched identity at #{path}")
-            []
-
-          {:error, reason} ->
-            Logger.warning("ignoring undecodable resume at #{path}: #{inspect(reason)}")
-            []
-        end
-
-      {:error, reason} ->
-        Logger.warning("ignoring unreadable resume at #{path}: #{inspect(reason)}")
-        []
-    end
   end
 
   # Atom keys from bento structs, string keys from raw info maps (tests,

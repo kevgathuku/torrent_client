@@ -52,21 +52,95 @@ defmodule TorrentClient.SessionTest do
     name = :"session_#{:erlang.unique_integer([:positive])}"
 
     opts =
-      [
-        name: name,
-        supervisor: sup,
-        announce_timeout: 200,
-        max_peers: 2,
-        recv_timeout: 2_000,
-        piece_timeout: 10_000,
-        watchdog_timeout: 5_000
-      ] ++ extra
+      Keyword.merge(
+        [
+          name: name,
+          supervisor: sup,
+          announce_timeout: 200,
+          max_peers: 2,
+          recv_timeout: 2_000,
+          piece_timeout: 10_000,
+          watchdog_timeout: 5_000
+        ],
+        extra
+      )
 
     # Unique child id: the default (the module) collides on the second session.
     start_supervised!(Supervisor.child_spec({Session, opts}, id: name))
   end
 
   # -- acceptance --------------------------------------------------------------
+
+  test "repeated subtree crash then give-up reports published progress", %{
+    sup: sup,
+    tmp: tmp
+  } do
+    {path, _info, _data} = craft(tmp, "cg", 2)
+    base = Path.join(tmp, "cg")
+    session = start_session(sup, watchdog_timeout: 200)
+
+    assert {:ok, id} =
+             Session.add_torrent(path, [base_dir: base, peers: [blackhole()]], session)
+
+    raw = Base.decode16!(id)
+    assert %{status: :downloading} = await_status(session, id, :downloading, 5_000)
+
+    # First incarnation verifies piece 0 and publishes it, then crashes.
+    pid = await_coordinator(raw)
+    send(pid, {:piece_complete, self(), 0})
+    assert %{download: %{verified: verified}} = :sys.get_state(pid)
+    assert MapSet.member?(verified, 0)
+
+    restarted = crash(raw, pid)
+    assert {:ok, %{verified: [0]}} = read_resume(base)
+    refute requests?(restarted, 0)
+
+    # A second crash must not regress either: every restart reseeds from
+    # the published file rather than its stale start opts.
+    again = crash(raw, restarted)
+    assert MapSet.member?(:sys.get_state(again).download.verified, 0)
+    refute requests?(again, 0)
+
+    # The hung swarm stalls out; the exhausted-facing report carries the
+    # progress verified before the crashes, surfaced on the entry.
+    assert %{status: :stalled, verified: 1, total: 2} =
+             await_status(session, id, :stalled, 10_000)
+
+    assert {:ok, %{verified: [0]}} = read_resume(base)
+  end
+
+  # Kill the coordinator (the supervisor restarts it) and wait for the
+  # successor incarnation.
+  defp crash(raw, pid) do
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 5_000
+    await_coordinator(raw, pid)
+  end
+
+  defp await_coordinator(raw, old \\ nil, tries \\ 200) do
+    case Registry.lookup(TorrentClient.Registry, {raw, :coordinator}) do
+      [{pid, _}] when pid != old ->
+        pid
+
+      _ when tries > 0 ->
+        Process.sleep(20)
+        await_coordinator(raw, old, tries - 1)
+
+      _ ->
+        flunk("coordinator did not start")
+    end
+  end
+
+  defp requests?(pid, index) do
+    Enum.any?(:sys.get_state(pid).workers, fn {_, %{index: got}} -> got == index end)
+  end
+
+  defp read_resume(base) do
+    with {:ok, bytes} <- Disk.read(Disk.resume_path(base)) do
+      Disk.decode_resume(bytes)
+    end
+  end
 
   test "two torrents run concurrently", %{session: session, tmp: tmp} do
     {path_a, info_a, data_a} = craft(tmp, "a", 1)

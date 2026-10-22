@@ -22,9 +22,10 @@ defmodule TorrentClient.Coordinator do
 
   The watchdog fires when no block completes within the budget: workers
   are terminated and their pieces requeued for fresh dials. Past the stall
-  budget the coordinator reports `{:download_stalled, info_hash}` and stops
-  `:normal`; with no workers and no assignable pieces left it reports
-  `{:swarm_exhausted, info_hash}` and stops `:normal`. Terminal stops
+  budget the coordinator reports `{:download_stalled, info_hash, progress}`
+  and stops `:normal`; with no workers and no assignable pieces left it
+  reports `{:swarm_exhausted, info_hash, progress}` and stops `:normal`
+  (`progress` is `%{verified: n, total: n}`). Terminal stops
   never restart (transient child, `:normal` exit), so the session above
   owns retry policy. On full verification it reports
   `{:torrent_complete, info_hash}` and stops `:normal`.
@@ -50,7 +51,8 @@ defmodule TorrentClient.Coordinator do
   `:info_hash` (20-byte binary), `:piece_hashes` (list of 20-byte SHA1s,
   one per piece), `:base_dir`, `:peer_sup` (peer supervisor name or pid).
   Optional: `:peers` (static peer list), `:peer_id`, `:report_to`,
-  `:verified` (already-verified piece indices, seeded from resume bytes),
+  `:verified` (already-verified piece indices, seeded from resume bytes
+  and unioned with the resume file on init),
   `:refill_peers` (0-arity fun returning fresh `[%Peer{}]`; called once
   when the swarm exhausts before giving up for real), `:webseed_urls`
   (BEP-19 base URLs, last resort when no idle peer holds a piece; empty
@@ -64,8 +66,10 @@ defmodule TorrentClient.Coordinator do
   `:disk`, `:sock`, `:clock`), `:name`.
 
   Every verified piece is published to `<base_dir>/.resume` (staged
-  temp-file + rename) as it completes, so a restart reseeds `:verified`
-  from the file instead of re-downloading.
+  temp-file + rename) as it completes. `init` reseeds `:verified` by
+  unioning the `:verified` opt with that file (identity-checked), so a
+  crash-restarted incarnation resumes from published progress instead of
+  clobbering the file with the set its first incarnation started with.
   """
   def start_link(opts) do
     case Keyword.get(opts, :name) do
@@ -97,13 +101,29 @@ defmodule TorrentClient.Coordinator do
   defp init_state(opts) do
     piece_hashes = Keyword.fetch!(opts, :piece_hashes)
     now = clock(opts).monotonic_ms()
+    info = Keyword.fetch!(opts, :info)
+    info_hash = Keyword.fetch!(opts, :info_hash)
+    base_dir = Keyword.fetch!(opts, :base_dir)
+    disk = Keyword.get(opts, :disk, TorrentClient.Disk)
+
+    # A crash-restarted coordinator is born with the start opts of its
+    # first incarnation, whose `verified` predates everything it
+    # published since. Merge the resume file so a restart resumes from
+    # published progress and no later save can regress it.
+    verified =
+      Keyword.get(opts, :verified, []) ++
+        TorrentClient.Disk.load_verified(disk, base_dir, %{
+          info_hash: info_hash,
+          total: length(piece_hashes),
+          piece_length: piece_length(info)
+        })
 
     state = %{
-      info: Keyword.fetch!(opts, :info),
-      info_hash: Keyword.fetch!(opts, :info_hash),
+      info: info,
+      info_hash: info_hash,
       piece_hashes: piece_hashes,
       total: length(piece_hashes),
-      base_dir: Keyword.fetch!(opts, :base_dir),
+      base_dir: base_dir,
       peer_id: Keyword.get(opts, :peer_id, Utils.generate_peer_id()),
       peers: Keyword.get(opts, :peers, []),
       webseed_urls: Keyword.get(opts, :webseed_urls, []),
@@ -118,7 +138,7 @@ defmodule TorrentClient.Coordinator do
       report_to: Keyword.get(opts, :report_to, nil),
       clock: Keyword.get(opts, :clock, TorrentClient.Clock),
       network: Keyword.get(opts, :network, TorrentClient.Network),
-      disk: Keyword.get(opts, :disk, TorrentClient.Disk),
+      disk: disk,
       sock: Keyword.get(opts, :sock, TorrentClient.GenTcpSocket),
       sup: Keyword.fetch!(opts, :peer_sup),
       refill_peers: Keyword.get(opts, :refill_peers, nil),
@@ -127,7 +147,7 @@ defmodule TorrentClient.Coordinator do
         piece_hashes
         |> length()
         |> DownloadState.init()
-        |> DownloadState.restore(Keyword.get(opts, :verified, []))
+        |> DownloadState.restore(verified)
         |> DownloadState.note_progress(now),
       workers: %{},
       availability: %{},
@@ -155,7 +175,7 @@ defmodule TorrentClient.Coordinator do
           reason: :swarm_exhausted
         })
 
-        if state.report_to, do: send(state.report_to, {:swarm_exhausted, state.info_hash})
+        report(state, :swarm_exhausted)
         {:stop, :swarm_exhausted}
 
       true ->
@@ -334,8 +354,15 @@ defmodule TorrentClient.Coordinator do
       reason: reason
     })
 
-    if state.report_to, do: send(state.report_to, {reason, state.info_hash})
+    report(state, reason)
     {:stop, :normal, state}
+  end
+
+  # Every give-up tells the session how much progress survived a crash,
+  # so an exhausted entry can report verified/total, not just a status.
+  defp report(state, reason) do
+    progress = %{verified: MapSet.size(state.download.verified), total: state.total}
+    if state.report_to, do: send(state.report_to, {reason, state.info_hash, progress})
   end
 
   defp finish(state) do
@@ -725,7 +752,7 @@ defmodule TorrentClient.Coordinator do
       for pid <- Map.keys(state.workers), do: stop_worker(state, pid)
       reap_orphans(%{state | workers: %{}})
 
-      if state.report_to, do: send(state.report_to, {:download_stalled, state.info_hash})
+      report(state, :download_stalled)
 
       Telemetry.emit([:torrent_client, :coordinator, :give_up], %{}, %{
         info_hash: state.info_hash,
