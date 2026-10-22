@@ -1038,6 +1038,91 @@ defmodule PeerWorkerTest do
     Process.flag(:trap_exit, false)
   end
 
+  test "three silent timeouts in a row give up instead of spinning", ctx do
+    {info, data, hash} = five_block(ctx)
+    info_hash = :crypto.strong_rand_bytes(20)
+    parent = self()
+    peer_hs = Handshake.init(info_hash, @fake_id) |> Handshake.serialize()
+
+    {:ok, b2} =
+      PeerMessage.encode(%Piece{
+        index: 0,
+        begin: 32_768,
+        block: binary_part(data, 32_768, 16_384)
+      })
+
+    <<l2::32-big, pay2::binary>> = b2
+
+    {:ok, b0} =
+      PeerMessage.encode(%Piece{index: 0, begin: 0, block: binary_part(data, 0, 16_384)})
+
+    <<l0::32-big, pay0::binary>> = b0
+
+    {:ok, b1} =
+      PeerMessage.encode(%Piece{
+        index: 0,
+        begin: 16_384,
+        block: binary_part(data, 16_384, 16_384)
+      })
+
+    <<l1::32-big, pay1::binary>> = b1
+
+    # Two blocks prove the stream was healthy then stalled; three
+    # silent timeouts after that must give up. The undelivered frames
+    # stay in the script: without the cap the worker would consume
+    # them spinning toward the piece deadline instead.
+    {:ok, script} =
+      ScriptSock.start([
+        :ok,
+        {:ok, peer_hs},
+        :ok,
+        :ok,
+        {:ok, <<0, 0, 0, 2>>},
+        {:ok, <<5, 0b10000000>>},
+        {:ok, <<0, 0, 0, 1>>},
+        {:ok, <<1>>},
+        :ok,
+        :ok,
+        :ok,
+        :ok,
+        :ok,
+        {:ok, <<l0::32-big>>},
+        {:ok, pay0},
+        {:ok, <<l1::32-big>>},
+        {:ok, pay1},
+        {:error, :timeout},
+        :ok,
+        :ok,
+        {:error, :timeout},
+        :ok,
+        {:error, :timeout},
+        {:ok, <<l2::32-big>>},
+        {:ok, pay2}
+      ])
+
+    expect(TorrentClient.NetworkMock, :connect, fn _peer -> {:ok, script} end)
+
+    Process.flag(:trap_exit, true)
+
+    {:ok, pid} =
+      PeerWorker.start_link(
+        worker_opts(ctx, info_hash, 1,
+          network: TorrentClient.NetworkMock,
+          sock: ScriptSock,
+          report_to: parent,
+          info: info,
+          piece_hash: hash
+        )
+      )
+
+    assert_receive {:block_progress, 0}, 1_000
+    assert_receive {:block_progress, 0}, 1_000
+    assert_receive {:piece_timeout, 0, _missing}, 5_000
+    assert_receive {:EXIT, ^pid, {:piece_timeout, 0, _}}, 5_000
+    assert Agent.get(script, fn {s, _} -> length(s) end) == 2
+    Process.flag(:trap_exit, false)
+  end
+
   defp assert_requests(begins) do
     Enum.each(begins, fn begin ->
       assert_receive {:sock_sent, bytes}, 1_000

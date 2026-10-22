@@ -37,8 +37,9 @@ defmodule TorrentClient.RequestsClientTest do
 
     started = System.monotonic_time(:millisecond)
     assert {:error, _} = TeslaClient.get("http://127.0.0.1:#{port}/announce")
-    # The 300ms test timeout fired, not the minutes-long adapter default.
-    assert System.monotonic_time(:millisecond) - started < 10_000
+    # Must stay under the 5s production default: if the test override
+    # were ever ignored, the default would land at 5s+ and fail here.
+    assert System.monotonic_time(:millisecond) - started < 4_000
   end
 
   # Swallow whatever arrives, forever: a single recv would return on

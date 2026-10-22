@@ -44,6 +44,16 @@ defmodule PeerPipelineTest do
     assert %{depth: 1} = pipe |> PeerPipeline.note_timeout() |> PeerPipeline.note_timeout()
   end
 
+  test "timeouts count consecutively and receipts reset the count" do
+    pipe = PeerPipeline.init(16)
+
+    pipe = pipe |> PeerPipeline.note_timeout() |> PeerPipeline.note_timeout()
+    assert pipe.consecutive_timeouts == 2
+
+    pipe = PeerPipeline.note_received(pipe, 0, 10)
+    assert pipe.consecutive_timeouts == 0
+  end
+
   test "receive timeout is three times the average, floored and capped" do
     # No samples yet: the configured ceiling applies untouched.
     assert PeerPipeline.recv_timeout(PeerPipeline.init(16), 10_000) == 10_000

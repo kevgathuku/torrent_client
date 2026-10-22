@@ -47,6 +47,7 @@ defmodule TorrentClient.PeerWorker do
   @max_inflight 5
   @piece_timeout 30_000
   @first_byte_timeout 5_000
+  @max_consecutive_timeouts 3
 
   @doc """
   Start an unnamed worker downloading `piece_index` from `peer`.
@@ -335,14 +336,22 @@ defmodule TorrentClient.PeerWorker do
         dispatch(state, message)
 
       {:error, :peer_timeout} ->
-        if deadline_exceeded?(state) do
-          give_up(state)
-        else
-          # Congestion signal, not death: halve the depth, drop the
-          # unanswered batch for re-request, and keep serving. Poison
-          # peers (zero bytes) trip the first-byte deadline instead.
-          pipeline = PeerPipeline.note_timeout(state.pipeline)
-          serve(%{state | pipeline: pipeline, inflight: []})
+        cond do
+          deadline_exceeded?(state) ->
+            give_up(state)
+
+          state.pipeline.consecutive_timeouts + 1 >= @max_consecutive_timeouts ->
+            # A timeout mid-frame leaves the stream desynchronized, so
+            # sustained silence can never complete: give up and let a
+            # fresh connection retry instead of spinning to the deadline.
+            give_up(%{state | pipeline: PeerPipeline.note_timeout(state.pipeline)})
+
+          true ->
+            # Congestion signal, not death: halve the depth, drop the
+            # unanswered batch for re-request, and keep serving. Poison
+            # peers (zero bytes) trip the first-byte deadline instead.
+            pipeline = PeerPipeline.note_timeout(state.pipeline)
+            serve(%{state | pipeline: pipeline, inflight: []})
         end
 
       {:error, reason} ->

@@ -21,6 +21,7 @@ defmodule TorrentClient.PeerPipeline do
   defstruct depth: @initial_depth,
             max_depth: @initial_depth,
             since_grow: 0,
+            consecutive_timeouts: 0,
             ewma: nil,
             received_count: 0
 
@@ -28,6 +29,7 @@ defmodule TorrentClient.PeerPipeline do
           depth: pos_integer(),
           max_depth: pos_integer(),
           since_grow: non_neg_integer(),
+          consecutive_timeouts: non_neg_integer(),
           ewma: number() | nil,
           received_count: non_neg_integer()
         }
@@ -48,7 +50,8 @@ defmodule TorrentClient.PeerPipeline do
     pipe = %{
       pipe
       | ewma: blend(pipe.ewma, now - sent_at),
-        received_count: pipe.received_count + 1
+        received_count: pipe.received_count + 1,
+        consecutive_timeouts: 0
     }
 
     if pipe.since_grow + 1 >= pipe.depth and pipe.depth < pipe.max_depth do
@@ -58,10 +61,20 @@ defmodule TorrentClient.PeerPipeline do
     end
   end
 
-  @doc "Back off on a silent peer: halve the depth (floor 1), restart growth."
+  @doc """
+  Back off on a silent peer: halve the depth (floor 1), restart growth,
+  and count the consecutive silence (receipts reset it). The worker
+  gives up after a few in a row: a timeout mid-frame leaves the stream
+  desynchronized, so spinning on it can never complete.
+  """
   @spec note_timeout(t()) :: t()
   def note_timeout(%__MODULE__{} = pipe) do
-    %{pipe | depth: max(div(pipe.depth, 2), 1), since_grow: 0}
+    %{
+      pipe
+      | depth: max(div(pipe.depth, 2), 1),
+        since_grow: 0,
+        consecutive_timeouts: pipe.consecutive_timeouts + 1
+    }
   end
 
   @doc "Effective per-message receive timeout: triple the average within floor and ceiling."
