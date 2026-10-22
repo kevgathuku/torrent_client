@@ -37,7 +37,7 @@ defmodule TorrentClient.Coordinator do
 
   require Logger
 
-  alias TorrentClient.{PeerWorker, WebseedWorker}
+  alias TorrentClient.{PeerWorker, Telemetry, WebseedWorker}
 
   @default_max_peers 4
   @default_max_inflight 5
@@ -150,6 +150,11 @@ defmodule TorrentClient.Coordinator do
         {:ok, state}
 
       swarm_exhausted?(state) ->
+        Telemetry.emit([:torrent_client, :coordinator, :give_up], %{}, %{
+          info_hash: state.info_hash,
+          reason: :swarm_exhausted
+        })
+
         if state.report_to, do: send(state.report_to, {:swarm_exhausted, state.info_hash})
         {:stop, :swarm_exhausted}
 
@@ -201,8 +206,26 @@ defmodule TorrentClient.Coordinator do
     {:noreply, note_progress(state)}
   end
 
-  def handle_info({:piece_complete, index}, state) do
-    state = state |> complete_piece(index) |> note_progress()
+  # The reporter pid attributes the bytes: endgame duplicates mean
+  # several workers can hold one index, and only the reporter did this
+  # verify. Unknown pids are supervisor-restarted orphans — their bytes
+  # still count, but there is no assignment to attribute them to.
+  def handle_info({:piece_complete, pid, index}, state) do
+    state =
+      case Map.fetch(state.workers, pid) do
+        {:ok, %{peer: peer, assigned_at: assigned_at}} ->
+          emit_complete(state, peer, index, assigned_at)
+
+          state
+          |> complete_piece(index)
+          |> forget_failure(peer)
+          |> drop_worker(pid)
+
+        :error ->
+          complete_piece(state, index)
+      end
+
+    state = note_progress(state)
     cancel_duplicates(state, index)
     finish_or_assign(state)
   end
@@ -221,14 +244,19 @@ defmodule TorrentClient.Coordinator do
       {nil, _} ->
         {:noreply, state}
 
-      {%{peer: peer, index: index}, workers} ->
+      # Untracked pids are supervisor-restarted orphans, already reaped:
+      # they emit nothing, since the coordinator never assigned them.
+      {%{peer: peer, index: index, assigned_at: assigned_at}, workers} ->
         state = %{state | workers: workers}
 
+        # Verified :normal exits were already emitted on the completion
+        # report (final pieces never produce a DOWN — the coordinator
+        # stops in finish/2 first). Only failures emit here.
         state =
           if reason == :normal and verified?(state, index) do
             forget_failure(state, peer)
           else
-            fail_assignment(state, peer, index, reason)
+            fail_assignment(state, peer, index, reason, assigned_at)
           end
 
         reap_orphans(state)
@@ -301,6 +329,11 @@ defmodule TorrentClient.Coordinator do
   # normally. Transient children never restart a `:normal` exit, so no
   # give-up loop can spin here; retry policy belongs to the session.
   defp give_up(state, reason) do
+    Telemetry.emit([:torrent_client, :coordinator, :give_up], %{}, %{
+      info_hash: state.info_hash,
+      reason: reason
+    })
+
     if state.report_to, do: send(state.report_to, {reason, state.info_hash})
     {:stop, :normal, state}
   end
@@ -457,7 +490,14 @@ defmodule TorrentClient.Coordinator do
     case safe_start_child(state.sup, {WebseedWorker, opts}) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
-        {:ok, put_in(state.workers[pid], %{peer: peer, index: index, ref: ref})}
+
+        {:ok,
+         put_in(state.workers[pid], %{
+           peer: peer,
+           index: index,
+           ref: ref,
+           assigned_at: state.clock.monotonic_ms()
+         })}
 
       {:error, reason} ->
         Logger.warning("Coordinator could not start webseed worker: #{inspect(reason)}")
@@ -487,7 +527,14 @@ defmodule TorrentClient.Coordinator do
     case safe_start_child(state.sup, {PeerWorker, opts}) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
-        {:ok, put_in(state.workers[pid], %{peer: peer, index: index, ref: ref})}
+
+        {:ok,
+         put_in(state.workers[pid], %{
+           peer: peer,
+           index: index,
+           ref: ref,
+           assigned_at: state.clock.monotonic_ms()
+         })}
 
       {:error, reason} ->
         Logger.warning("Coordinator could not start worker: #{inspect(reason)}")
@@ -541,10 +588,11 @@ defmodule TorrentClient.Coordinator do
     Map.get(info, :"piece length") || Map.get(info, "piece length")
   end
 
-  defp fail_assignment(state, peer, index, :normal) do
+  defp fail_assignment(state, peer, index, :normal, assigned_at) do
     # A :normal exit for an unverified piece means the peer lacks it:
     # verified exits never reach here (the caller forgets them above),
     # so this always records missing and requeues.
+    emit_failed(state, peer, index, :normal, assigned_at)
     state = %{state | download: DownloadState.requeue(state.download, index)}
 
     %{
@@ -554,7 +602,8 @@ defmodule TorrentClient.Coordinator do
     }
   end
 
-  defp fail_assignment(state, peer, index, _reason) do
+  defp fail_assignment(state, peer, index, reason, assigned_at) do
+    emit_failed(state, peer, index, reason, assigned_at)
     failures = Map.update(state.failures, peer_key(peer), 1, &(&1 + 1))
     state = %{state | failures: failures, download: DownloadState.requeue(state.download, index)}
 
@@ -570,6 +619,71 @@ defmodule TorrentClient.Coordinator do
 
   defp forget_failure(state, peer) do
     %{state | failures: Map.delete(state.failures, peer_key(peer))}
+  end
+
+  defp drop_worker(state, pid), do: %{state | workers: Map.delete(state.workers, pid)}
+
+  # Piece latency runs assignment to report through the coordinator's
+  # clock, so frozen test clocks give exact durations.
+  defp emit_complete(state, {:webseed, _}, index, assigned_at) do
+    now = state.clock.monotonic_ms()
+
+    Telemetry.emit(
+      [:torrent_client, :webseed, :fetch_complete],
+      %{duration_ms: now - assigned_at, bytes: piece_bytes(state, index)},
+      %{
+        info_hash: state.info_hash,
+        index: index
+      }
+    )
+  end
+
+  defp emit_complete(state, peer, index, assigned_at) do
+    now = state.clock.monotonic_ms()
+
+    Telemetry.emit(
+      [:torrent_client, :peer, :piece_complete],
+      %{duration_ms: now - assigned_at, bytes: piece_bytes(state, index)},
+      %{
+        info_hash: state.info_hash,
+        index: index,
+        peer: peer_key(peer)
+      }
+    )
+  end
+
+  defp emit_failed(state, {:webseed, _}, index, reason, assigned_at) do
+    now = state.clock.monotonic_ms()
+
+    Telemetry.emit(
+      [:torrent_client, :webseed, :fetch_failed],
+      %{duration_ms: now - assigned_at},
+      %{
+        info_hash: state.info_hash,
+        index: index,
+        reason: reason
+      }
+    )
+  end
+
+  defp emit_failed(state, peer, index, reason, assigned_at) do
+    now = state.clock.monotonic_ms()
+
+    Telemetry.emit([:torrent_client, :peer, :piece_failed], %{duration_ms: now - assigned_at}, %{
+      info_hash: state.info_hash,
+      index: index,
+      peer: peer_key(peer),
+      reason: reason
+    })
+  end
+
+  # Unreachable with a validated torrent (callers only ask for needed
+  # pieces, which always span); total instead of raising.
+  defp piece_bytes(state, index) do
+    case Torrent.piece_span(state.info, index) do
+      {:ok, {_offset, size}} -> size
+      {:error, _} -> 0
+    end
   end
 
   defp cancel_duplicates(state, index) do
@@ -612,9 +726,20 @@ defmodule TorrentClient.Coordinator do
       reap_orphans(%{state | workers: %{}})
 
       if state.report_to, do: send(state.report_to, {:download_stalled, state.info_hash})
+
+      Telemetry.emit([:torrent_client, :coordinator, :give_up], %{}, %{
+        info_hash: state.info_hash,
+        reason: :download_stalled
+      })
+
       {:stop, :normal, %{state | stall_count: stall_count, workers: %{}}}
     else
       Logger.warning("Download stalled; restarting workers (#{stall_count})")
+
+      Telemetry.emit([:torrent_client, :coordinator, :stall], %{stall_count: stall_count}, %{
+        info_hash: state.info_hash
+      })
+
       state = restart_workers(%{state | stall_count: stall_count})
       %{state | download: DownloadState.note_progress(state.download, now)}
     end

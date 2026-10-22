@@ -60,7 +60,9 @@ defmodule TorrentClient.PeerWorker do
   (default #{@max_inflight}), `:piece_timeout` ms for the whole piece
   (default #{@piece_timeout}), `:report_to` pid receiving
   `{:piece_timeout, index, missing}` on give-up (default `nil`). When set,
-  it also receives `{:piece_complete, index}` after a verified write,
+  it also receives `{:piece_complete, pid, index}` after a verified write
+  (`pid` is the reporting worker, so the coordinator attributes bytes
+  exactly even with endgame duplicates),
   `{:block_progress, index}` per accepted block, and `{:availability,
   worker_pid, set}` whenever the peer's known pieces grow (bitfield or
   `Have`). The coordinator consumes these; the worker never blocks on
@@ -386,7 +388,7 @@ defmodule TorrentClient.PeerWorker do
     case state.disk.write_piece(state.base_dir, state.info, state.piece_index, data) do
       :ok ->
         Logger.debug("Piece #{state.piece_index} verified and written")
-        report(state, {:piece_complete, state.piece_index})
+        report(state, {:piece_complete, self(), state.piece_index})
         {:stop, :normal, state}
 
       {:error, reason} ->

@@ -640,7 +640,7 @@ defmodule PeerWorkerTest do
       assert_receive {:availability, ^pid, set}, 5_000
       assert MapSet.member?(set, 0)
       assert_receive {:block_progress, 0}, 5_000
-      assert_receive {:piece_complete, 0}, 5_000
+      assert_receive {:piece_complete, ^pid, 0}, 5_000
       assert_receive {:EXIT, ^pid, :normal}, 5_000
       assert {:ok, data} == Disk.read_piece(ctx.base, info, 0)
     end
