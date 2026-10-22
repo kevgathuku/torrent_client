@@ -39,7 +39,7 @@ defmodule TorrentClient.PeerWorker do
     Unchoke
   }
 
-  alias TorrentClient.PeerPipeline
+  alias TorrentClient.{MSE, PeerPipeline}
 
   @block_size 16_384
   @handshake_size 68
@@ -59,7 +59,10 @@ defmodule TorrentClient.PeerWorker do
   `TorrentClient.Disk`), `:sock` (default
   `TorrentClient.GenTcpSocket`, implementing
   `TorrentClient.SocketBehaviour`), `:clock` (default
-  `TorrentClient.Clock`), `:recv_timeout` ms (default
+  `TorrentClient.Clock`), `:encryption` (`:plaintext` default;
+  `:prefer_mse` tries the MSE/PE encrypted handshake and falls back to
+  plaintext on a fresh connection when the peer speaks none;
+  `:require_mse` fails closed instead), `:recv_timeout` ms (default
   #{@recv_timeout}). Pipeline: up to `:max_inflight` outstanding block
   requests (default #{@max_inflight}), adapting to the peer by additive
   increase / multiplicative decrease (one more outstanding block per
@@ -110,6 +113,8 @@ defmodule TorrentClient.PeerWorker do
       disk: Keyword.get(opts, :disk, TorrentClient.Disk),
       sock: Keyword.get(opts, :sock, TorrentClient.GenTcpSocket),
       clock: Keyword.get(opts, :clock, TorrentClient.Clock),
+      encryption: Keyword.get(opts, :encryption, :plaintext),
+      crypto: nil,
       recv_timeout: Keyword.get(opts, :recv_timeout, @recv_timeout),
       max_inflight: Keyword.get(opts, :max_inflight, @max_inflight),
       piece_timeout: Keyword.get(opts, :piece_timeout, @piece_timeout),
@@ -127,38 +132,68 @@ defmodule TorrentClient.PeerWorker do
       received: %{}
     }
 
-    case Torrent.piece_span(state.info, state.piece_index) do
-      {:ok, {_offset, size}} ->
-        {:ok, %{state | blocks: split_blocks(size)}, {:continue, :connect}}
+    if state.encryption in [:plaintext, :prefer_mse, :require_mse] do
+      case Torrent.piece_span(state.info, state.piece_index) do
+        {:ok, {_offset, size}} ->
+          {:ok, %{state | blocks: split_blocks(size)}, {:continue, :connect}}
 
-      {:error, _} ->
-        {:stop, :invalid_piece}
+        {:error, _} ->
+          {:stop, :invalid_piece}
+      end
+    else
+      {:stop, :invalid_encryption}
     end
   end
 
   @impl true
   def handle_continue(:connect, state) do
-    case state.network.connect(state.peer) do
-      {:ok, socket} ->
-        state = %{state | socket: socket}
+    case connect_and_greet(state) do
+      {:ok, state} ->
+        now = state.clock.monotonic_ms()
 
-        case handshake(state) do
-          :ok ->
-            now = state.clock.monotonic_ms()
-
-            serve(%{
-              state
-              | deadline_at: now + state.piece_timeout,
-                served_at: now,
-                last_send_at: now
-            })
-
-          {:error, reason} ->
-            {:stop, reason, state}
-        end
+        serve(%{
+          state
+          | deadline_at: now + state.piece_timeout,
+            served_at: now,
+            last_send_at: now
+        })
 
       {:error, reason} ->
-        {:stop, {:connect_failed, reason}, state}
+        {:stop, reason, state}
+    end
+  end
+
+  defp connect_and_greet(state) do
+    case connect(state) do
+      {:ok, socket} -> greet_connected(state, socket)
+      {:error, _} = err -> err
+    end
+  end
+
+  defp greet_connected(state, socket) do
+    case greet(%{state | socket: socket}, state.encryption) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, {:mse_failed, _}} when state.encryption == :prefer_mse ->
+        # The optimistic MSE bytes desynchronize this stream, so the
+        # fallback needs a fresh connection, not a re-read.
+        if is_port(socket), do: state.sock.close(socket)
+
+        with {:ok, retry} <- connect(state),
+             {:ok, _} = ok <- greet(%{state | socket: retry, crypto: nil}, :plaintext) do
+          ok
+        end
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp connect(state) do
+    case state.network.connect(state.peer) do
+      {:ok, socket} -> {:ok, socket}
+      {:error, reason} -> {:error, {:connect_failed, reason}}
     end
   end
 
@@ -176,19 +211,124 @@ defmodule TorrentClient.PeerWorker do
     end
   end
 
+  defp greet(state, :plaintext), do: greet_plaintext(state)
+  defp greet(state, :prefer_mse), do: greet_mse(state)
+  defp greet(state, :require_mse), do: greet_mse(state)
+
   # Full BEP-3 greeting: send our handshake, read theirs (exactly 68 bytes,
   # so a co-segmented bitfield stays buffered), fail closed on mismatch,
   # then announce interest and unchoke the peer.
-  defp handshake(state) do
+  defp greet_plaintext(state) do
     out = Handshake.init(state.info_hash, state.peer_id) |> Handshake.serialize()
+
+    with {:ok, state} <- send_bytes(state, out) do
+      arm_peer(state)
+    end
+  end
+
+  # MSE/PE initiator: DH hello, then the encrypted step 3 carrying our BT
+  # handshake as IA, then the peer's handshake off the negotiated stream.
+  # Every failure wraps as {:mse_failed, reason} so :prefer_mse can tell
+  # a dead encryption attempt from a dead peer; the armed greeting inside
+  # passes its own errors through unwrapped (it is the with-body, not a step).
+  defp greet_mse(state) do
+    priv = MSE.generate_private()
+    hello = MSE.public_key(priv) <> MSE.random_pad()
+
+    with {:ok, state} <- send_bytes(state, hello),
+         {:ok, yb, state} <- recv_exact(state, 96, state.recv_timeout),
+         {:ok, secret} <- MSE.shared_secret(yb, priv),
+         {:ok, state} <- mse_negotiate(state, secret) do
+      arm_peer(state)
+    else
+      {:error, reason} -> {:error, {:mse_failed, reason}}
+    end
+  end
+
+  defp mse_negotiate(state, secret) do
+    info_hash = state.info_hash
+    ia = Handshake.init(info_hash, state.peer_id) |> Handshake.serialize()
+    step3 = MSE.build_step3(secret, info_hash, ia)
+
+    with {:ok, state} <- send_bytes(state, step3),
+         {:ok, recv_stream, state} <- mse_read_select(state, secret, info_hash, <<>>) do
+      # The payload stream continues the step-3 stream: fast-forward past
+      # its encrypted bytes (everything after the plaintext req1 + proof).
+      send_stream =
+        MSE.rc4_skip(MSE.stream_key(secret, info_hash, :initiator), byte_size(step3) - 40)
+
+      {:ok, %{state | crypto: %{send: send_stream, recv: recv_stream}}}
+    end
+  end
+
+  # The peer's PadB junk has unknown length, so the VC resync reads one
+  # byte at a time: the only granularity with no overshoot, which keeps
+  # later stream bytes in the socket instead of a readahead buffer. Only
+  # windows touching the new byte can match (older ones already missed),
+  # so each step scans just the last 15 bytes.
+  defp mse_read_select(state, secret, skey, buf) do
+    case scan_new_vc(buf, secret, skey) do
+      {:ok, offset} -> mse_read_rest(state, secret, skey, buf, offset)
+      {:error, :vc_not_found} -> mse_read_more(state, secret, skey, buf)
+    end
+  end
+
+  defp mse_read_more(state, secret, skey, buf) do
+    if byte_size(buf) > 630 do
+      {:error, :vc_not_found}
+    else
+      case recv_exact(state, 1, state.recv_timeout) do
+        {:ok, byte, state} -> mse_read_select(state, secret, skey, buf <> byte)
+        {:error, _} = err -> err
+      end
+    end
+  end
+
+  defp scan_new_vc(buf, secret, skey) do
+    len = byte_size(buf)
+    from = max(len - 15, 0)
+    tail = binary_part(buf, from, len - from)
+
+    case MSE.scan_for_vc(tail, secret, skey) do
+      {:ok, rel} -> {:ok, from + rel}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp mse_read_rest(state, secret, skey, buf, offset) do
+    key = MSE.stream_key(secret, skey, :responder)
+
+    with {:ok, buf, state} <- recv_more(state, buf, offset + 14),
+         # Peek, not consume: the stream parse below replays these exact
+         # bytes so keystream positions match the peer's continuous stream.
+         <<_vc::64, _select::32-big, len_d::16-big>> =
+           MSE.rc4_oneshot(key, binary_part(buf, offset, 14)),
+         total = offset + 14 + len_d,
+         {:ok, buf, state} <- recv_more(state, buf, total),
+         stream = MSE.rc4_new(key),
+         cipher = binary_part(buf, offset, total - offset),
+         {:ok, :rc4, recv_stream} <- MSE.parse_step4_stream(stream, cipher) do
+      {:ok, recv_stream, state}
+    end
+  end
+
+  defp recv_more(state, buf, want) when byte_size(buf) >= want, do: {:ok, buf, state}
+
+  defp recv_more(state, buf, want) do
+    case recv_exact(state, want - byte_size(buf), state.recv_timeout) do
+      {:ok, data, state} -> recv_more(state, buf <> data, want)
+      {:error, _} = err -> err
+    end
+  end
+
+  defp arm_peer(state) do
     info_hash = state.info_hash
 
-    with :ok <- tcp_send(state.sock, state.socket, out),
-         {:ok, bytes} <- recv_exact(state.sock, state.socket, @handshake_size, state.recv_timeout),
+    with {:ok, bytes, state} <- recv_exact(state, @handshake_size, state.recv_timeout),
          {:ok, %Handshake{info_hash: ^info_hash}} <- safe_deserialize(bytes),
-         :ok <- send_message(state.sock, state.socket, %Interested{}),
-         :ok <- send_message(state.sock, state.socket, %Unchoke{}) do
-      :ok
+         {:ok, state} <- send_message(state, %Interested{}),
+         {:ok, state} <- send_message(state, %Unchoke{}) do
+      {:ok, state}
     else
       {:ok, %Handshake{}} -> {:error, :info_hash_mismatch}
       {:error, reason} -> {:error, reason}
@@ -203,9 +343,17 @@ defmodule TorrentClient.PeerWorker do
 
   # All worker-sent messages are statically valid (block splits cap
   # request lengths), so encoding cannot fail: the match is an assertion.
-  defp send_message(sock, socket, message) do
+  # Bytes leave through the RC4 stream once MSE negotiated it.
+  defp send_message(state, message) do
     {:ok, bytes} = PeerMessage.encode(message)
-    tcp_send(sock, socket, bytes)
+    send_bytes(state, bytes)
+  end
+
+  defp send_bytes(state, bytes) do
+    case tcp_send(state.sock, state.socket, bytes, state.crypto) do
+      {:ok, crypto} -> {:ok, %{state | crypto: crypto}}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   # Loop: finish when every block is in, give up at the deadline, stop
@@ -238,18 +386,19 @@ defmodule TorrentClient.PeerWorker do
   end
 
   defp cancel_inflight(%{piece_index: piece} = state, piece) do
-    Enum.reduce_while(state.inflight, :ok, fn {begin, length}, :ok ->
-      case send_message(state.sock, state.socket, %Cancel{
+    # The crypto stream advances per send, so the state threads through.
+    Enum.reduce_while(state.inflight, {:ok, state}, fn {begin, length}, {:ok, state} ->
+      case send_message(state, %Cancel{
              index: state.piece_index,
              begin: begin,
              length: length
            }) do
-        :ok -> {:cont, :ok}
+        {:ok, state} -> {:cont, {:ok, state}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
     |> case do
-      :ok -> {:stop, :normal, state}
+      {:ok, state} -> {:stop, :normal, state}
       {:error, reason} -> {:stop, reason, state}
     end
   end
@@ -314,8 +463,8 @@ defmodule TorrentClient.PeerWorker do
       {begin, length} = next_block(state)
       request = %Request{index: state.piece_index, begin: begin, length: length}
 
-      case send_message(state.sock, state.socket, request) do
-        :ok ->
+      case send_message(state, request) do
+        {:ok, state} ->
           fill_pipeline(%{
             state
             | inflight: [{begin, length} | state.inflight],
@@ -332,7 +481,7 @@ defmodule TorrentClient.PeerWorker do
 
   defp await_message(state) do
     case recv_message(state) do
-      {:ok, message} ->
+      {:ok, message, state} ->
         dispatch(state, message)
 
       {:error, :peer_timeout} ->
@@ -469,9 +618,9 @@ defmodule TorrentClient.PeerWorker do
   end
 
   defp recv_message(state) do
-    with {:ok, <<length::32-big>>} <- recv_exact(state.sock, state.socket, 4, recv_budget(state)) do
+    with {:ok, <<length::32-big>>, state} <- recv_exact(state, 4, recv_budget(state)) do
       if length == 0 do
-        {:ok, %KeepAlive{}}
+        {:ok, %KeepAlive{}, state}
       else
         recv_payload(state, length)
       end
@@ -481,28 +630,46 @@ defmodule TorrentClient.PeerWorker do
   # Exact framing: payload holds precisely one message, so the decoded
   # rest is always empty and any error is fail-closed.
   defp recv_payload(state, length) do
-    with {:ok, payload} <- recv_exact(state.sock, state.socket, length, recv_budget(state)),
+    with {:ok, payload, state} <- recv_exact(state, length, recv_budget(state)),
          {:ok, message, _rest} <- PeerMessage.decode(<<length::32-big, payload::binary>>) do
-      {:ok, message}
+      {:ok, message, state}
     else
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp recv_exact(sock, socket, count, timeout) do
-    case sock.recv(socket, count, timeout) do
-      {:ok, data} -> {:ok, data}
+  defp recv_exact(state, count, timeout) do
+    case state.sock.recv(state.socket, count, timeout) do
+      {:ok, data} -> decrypt(data, state)
       {:error, :timeout} -> {:error, :peer_timeout}
       {:error, :closed} -> {:error, :peer_closed}
       {:error, reason} -> {:error, reason}
     end
   end
 
+  defp decrypt(data, %{crypto: nil} = state), do: {:ok, data, state}
+
+  defp decrypt(data, %{crypto: crypto} = state) do
+    {recv_state, plain} = MSE.rc4_crypt(crypto.recv, data)
+    {:ok, plain, %{state | crypto: %{crypto | recv: recv_state}}}
+  end
+
   # A dead socket raises instead of answering: fail closed so the
   # supervisor restarts with a fresh connection.
-  defp tcp_send(sock, socket, bytes) do
+  defp tcp_send(sock, socket, bytes, nil) do
     case sock.send(socket, bytes) do
-      :ok -> :ok
+      :ok -> {:ok, nil}
+      {:error, reason} -> {:error, {:send_failed, reason}}
+    end
+  rescue
+    _ -> {:error, {:send_failed, :badarg}}
+  end
+
+  defp tcp_send(sock, socket, bytes, crypto) do
+    {send_state, cipher} = MSE.rc4_crypt(crypto.send, bytes)
+
+    case sock.send(socket, cipher) do
+      :ok -> {:ok, %{crypto | send: send_state}}
       {:error, reason} -> {:error, {:send_failed, reason}}
     end
   rescue

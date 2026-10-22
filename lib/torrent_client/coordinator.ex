@@ -66,8 +66,9 @@ defmodule TorrentClient.Coordinator do
   `:max_peers`
   (default #{@default_max_peers}), `:max_inflight`, `:watchdog_timeout`
   ms, `:max_stalls`, `:max_peer_failures`, `:recv_timeout`/
-  `:piece_timeout` ms passed to workers, effect seams (`:network`,
-  `:disk`, `:sock`, `:clock`), `:name`.
+  `:piece_timeout` ms passed to workers, `:encryption` (`:plaintext`,
+  `:prefer_mse`, `:require_mse`) passed to workers, effect seams
+  (`:network`, `:disk`, `:sock`, `:clock`), `:name`.
 
   Every verified piece is published to `<base_dir>/.resume` (staged
   temp-file + rename) as it completes. `init` reseeds `:verified` by
@@ -144,6 +145,7 @@ defmodule TorrentClient.Coordinator do
       network: Keyword.get(opts, :network, TorrentClient.Network),
       disk: disk,
       sock: Keyword.get(opts, :sock, TorrentClient.GenTcpSocket),
+      encryption: Keyword.get(opts, :encryption, :plaintext),
       sup: Keyword.fetch!(opts, :peer_sup),
       refill_peers: Keyword.get(opts, :refill_peers, nil),
       refilled: false,
@@ -552,6 +554,7 @@ defmodule TorrentClient.Coordinator do
       recv_timeout: state.recv_timeout,
       piece_timeout: state.piece_timeout,
       max_inflight: state.max_inflight,
+      encryption: state.encryption,
       report_to: self()
     ]
 
