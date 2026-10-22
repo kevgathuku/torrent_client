@@ -12,9 +12,9 @@ defmodule TorrentClient.MSE do
   parsers are fail-closed (`{:error, reason}`, never a crash).
 
   This module is transport-free: it encodes/parses handshake blobs and
-  encrypts the post-handshake stream, but it does not own a socket. The
-  plaintext BEP-3 path (`Handshake`, `PeerWorker`) is untouched — MSE is
-  opt-in per connection until a caller wires it to a socket.
+  encrypts the post-handshake stream, but it does not own a socket.
+  `TorrentClient.PeerWorker` drives it over the sock seam when its
+  `:encryption` opt is not `:plaintext`.
   """
 
   import Bitwise
@@ -116,6 +116,17 @@ defmodule TorrentClient.MSE do
     out
   end
 
+  @doc """
+  Fresh RC4 state advanced past `n` keystream bytes. Continues a stream
+  whose prefix was encrypted one-shot (the handshake builders below),
+  so later payload calls line up with the peer's continuous stream.
+  """
+  @spec rc4_skip(binary(), non_neg_integer()) :: rc4_state()
+  def rc4_skip(key, n) do
+    {stream, _} = rc4_crypt(rc4_new(key), :binary.copy(<<0>>, n))
+    stream
+  end
+
   @doc "Random 0..512-byte padding, per the spec's PadA/PadB range."
   @spec random_pad :: binary()
   def random_pad, do: :crypto.strong_rand_bytes(:rand.uniform(@max_pad + 1) - 1)
@@ -202,6 +213,30 @@ defmodule TorrentClient.MSE do
 
       _other ->
         {:error, :malformed}
+    end
+  end
+
+  @doc """
+  Decrypts one step-4 blob through a continuing responder stream (the
+  peer's ENCRYPT stream runs past negotiation into the payload, so the
+  caller replays the exact bytes it peeked, never a fresh stream). Only
+  an RC4 selection is acceptable — anything else is a downgrade.
+  """
+  @spec parse_step4_stream(rc4_state(), binary()) ::
+          {:ok, crypto(), rc4_state()} | {:error, :bad_vc | :unacceptable_crypto}
+  def parse_step4_stream(stream, cipher) do
+    {stream, plain} = rc4_crypt(stream, cipher)
+
+    case plain do
+      <<@vc::binary, @crypto_rc4::32-big, len::16-big, pad::binary>>
+      when byte_size(pad) == len ->
+        {:ok, :rc4, stream}
+
+      <<@vc::binary, _select::32-big, _::binary>> ->
+        {:error, :unacceptable_crypto}
+
+      _other ->
+        {:error, :bad_vc}
     end
   end
 

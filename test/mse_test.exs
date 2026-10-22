@@ -66,6 +66,37 @@ defmodule TorrentClient.MSETest do
              MSE.stream_key(secret, @info_hash, :responder)
   end
 
+  test "rc4_skip continues a one-shot prefix at the right keystream position" do
+    key = :crypto.strong_rand_bytes(20)
+    msg = :crypto.strong_rand_bytes(48)
+    prefix_len = 37
+    {_s, full} = MSE.rc4_crypt(MSE.rc4_new(key), :binary.copy(<<0>>, prefix_len) <> msg)
+    {_s, tail} = MSE.rc4_crypt(MSE.rc4_skip(key, prefix_len), msg)
+    assert binary_part(full, prefix_len, byte_size(msg)) == tail
+  end
+
+  test "parse_step4_stream consumes through a continuing stream" do
+    secret = :crypto.strong_rand_bytes(96)
+    key = MSE.stream_key(secret, @info_hash, :responder)
+    payload = :crypto.strong_rand_bytes(16)
+    {_s, c4} = MSE.rc4_crypt(MSE.rc4_new(key), step4_plain(:rc4))
+    {_s, cp} = MSE.rc4_crypt(MSE.rc4_skip(key, byte_size(c4)), payload)
+    # The blob plus pipelined payload decrypt through one stream.
+    assert {:ok, :rc4, stream} = MSE.parse_step4_stream(MSE.rc4_new(key), c4)
+    {_s, ^payload} = MSE.rc4_crypt(stream, cp)
+
+    {_s, bad} = MSE.rc4_crypt(MSE.rc4_new(key), step4_plain(:plaintext))
+    assert {:error, :unacceptable_crypto} = MSE.parse_step4_stream(MSE.rc4_new(key), bad)
+
+    assert {:error, :bad_vc} =
+             MSE.parse_step4_stream(MSE.rc4_new(key), :crypto.strong_rand_bytes(14))
+  end
+
+  defp step4_plain(select) do
+    provide = if select == :rc4, do: 0x02, else: 0x01
+    <<0::64, provide::32-big, 0::16-big>>
+  end
+
   test "responder prefers rc4 over plaintext when both are provided" do
     assert {:ok, :rc4} = MSE.select_crypto(0x03)
     assert {:ok, :plaintext} = MSE.select_crypto(0x01)
