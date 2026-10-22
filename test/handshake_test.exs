@@ -10,6 +10,16 @@ defmodule HandshakeTest do
     assert Handshake.serialize(h) |> byte_size == 68
   end
 
+  test "serializes BEP-3's exact protocol identifier" do
+    peer_id = "ffffffffffffffffffff"
+    info_hash = "eeeeeeeeeeeeeeeeeeee"
+    h = Handshake.init(info_hash, peer_id)
+    # Lowercase 'p': strict peers drop anything else, so the bytes
+    # themselves are asserted, not just the length.
+    assert Handshake.serialize(h) ==
+             <<19>> <> "BitTorrent protocol" <> @extensions <> info_hash <> peer_id
+  end
+
   test "correctly deserializes a stream" do
     peer_id = "ffffffffffffffffffff"
     info_hash = "eeeeeeeeeeeeeeeeeeee"

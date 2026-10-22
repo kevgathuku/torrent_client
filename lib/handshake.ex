@@ -3,7 +3,10 @@ defmodule Handshake do
   BEP-3 handshake codec: 68-byte greeting with the peer's info-hash.
   """
 
-  @protocol "BitTorrent Protocol"
+  # BEP-3's exact identifier: lowercase 'p'. Strict peers (Transmission)
+  # drop the handshake otherwise; our own seeds accept anything, which
+  # is why only a real client caught this.
+  @protocol "BitTorrent protocol"
   @capabilities <<0, 0, 0, 0, 0, 0, 0, 0>>
 
   @protocol_length byte_size(@protocol)
