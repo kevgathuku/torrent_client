@@ -32,6 +32,79 @@ defmodule ScriptSock do
   end
 end
 
+defmodule ServingSock do
+  @moduledoc false
+  # Scripted greeting, then serves any requested block from `data`
+  # instantly. Every sent frame goes to the listener, so tests assert
+  # on batch sizes without aligning a send/receive script (sends and
+  # receives interleave per round, which a fixed script cannot track
+  # once the depth adapts).
+  @behaviour TorrentClient.SocketBehaviour
+
+  def start(peer_hs, data, listener) do
+    script = [
+      {:ok, peer_hs},
+      {:ok, <<0, 0, 0, 2>>},
+      {:ok, <<5, 0b10000000>>},
+      {:ok, <<0, 0, 0, 1>>},
+      {:ok, <<1>>}
+    ]
+
+    Agent.start_link(fn -> {script, data, listener, [], :len} end)
+  end
+
+  @impl true
+  def send(sock, bytes) do
+    {_, _, listener, _, _} = Agent.get(sock, & &1)
+    Kernel.send(listener, {:sock_sent, bytes})
+
+    case PeerMessage.decode(bytes) do
+      {:ok, %PeerMessage.Request{index: 0, begin: begin, length: length}, <<>>} ->
+        Agent.update(sock, fn {script, data, l, pending, stage} ->
+          {script, data, l, pending ++ [{begin, length}], stage}
+        end)
+
+      _ ->
+        :ok
+    end
+
+    :ok
+  end
+
+  @impl true
+  def recv(sock, _count, _timeout) do
+    Agent.get_and_update(sock, &next(&1))
+  end
+
+  defp next({[head | tail], data, listener, pending, stage}) do
+    {head, {tail, data, listener, pending, stage}}
+  end
+
+  defp next({[], data, listener, [{begin, length} | rest], :len}) do
+    {:ok, frame} =
+      PeerMessage.encode(%PeerMessage.Piece{
+        index: 0,
+        begin: begin,
+        block: binary_part(data, begin, length)
+      })
+
+    <<len::32-big, payload::binary>> = frame
+    {{:ok, <<len::32-big>>}, {[], data, listener, rest, {:pay, payload}}}
+  end
+
+  defp next({[], data, listener, pending, {:pay, payload}}) do
+    {{:ok, payload}, {[], data, listener, pending, :len}}
+  end
+
+  # Nothing requested and nothing scripted: loud failure, never a hang.
+  defp next({[], data, listener, [], :len}) do
+    {{:error, :closed}, {[], data, listener, [], :len}}
+  end
+
+  @impl true
+  def close(_sock), do: :ok
+end
+
 defmodule PeerWorkerTest do
   @moduledoc """
   The supervised peer worker against loopback fake peers (real TCP, no
@@ -1017,86 +1090,51 @@ defmodule PeerWorkerTest do
     Process.flag(:trap_exit, false)
   end
 
-  test "pipeline depth grows with sustained throughput on slow links", ctx do
-    blocks = 16
+  test "pipeline depth grows with sustained throughput", ctx do
+    # Batch sizes must widen 5, 6, 7 as receipts sustain, which fixed
+    # depth 5 forbids. The double serves any requested block from the
+    # piece data instantly and reports every sent frame, so no timing
+    # is involved and no send/receive script can misalign — batch
+    # sizes are the whole assertion.
+    blocks = 18
     length = blocks * 16_384
+    begins = for i <- 0..(blocks - 1), do: i * 16_384
     info = %{:"piece length" => length, name: "wide.bin", length: length}
     :ok = TorrentClient.Disk.init_layout(ctx.base, info)
     data = :crypto.strong_rand_bytes(length)
     hash = :crypto.hash(:sha, data)
     info_hash = :crypto.strong_rand_bytes(20)
     parent = self()
-    {listen, port} = listen!()
-    {:ok, gauge} = Agent.start_link(fn -> {0, 0} end)
+    peer_hs = Handshake.init(info_hash, @fake_id) |> Handshake.serialize()
 
-    spawn(fn ->
-      sock = listen |> accept_handshake(info_hash) |> greet(info_hash)
-      send_message(sock, %Unchoke{})
-      slow_seed(sock, data, gauge)
-    end)
+    {:ok, sock} = ServingSock.start(peer_hs, data, parent)
+    expect(TorrentClient.NetworkMock, :connect, fn _peer -> {:ok, sock} end)
 
     Process.flag(:trap_exit, true)
 
     {:ok, pid} =
       PeerWorker.start_link(
-        worker_opts(ctx, info_hash, port, info: info, piece_hash: hash, report_to: parent)
+        worker_opts(ctx, info_hash, 1,
+          network: TorrentClient.NetworkMock,
+          sock: ServingSock,
+          report_to: parent,
+          info: info,
+          piece_hash: hash,
+          max_inflight: 18
+        )
       )
 
-    assert_receive {:EXIT, ^pid, :normal}, 15_000
+    for _ <- 1..3, do: assert_receive({:sock_sent, _}, 1_000)
+    assert_requests(Enum.take(begins, 5))
+    for _ <- 1..5, do: assert_receive({:block_progress, 0}, 1_000)
+    assert_requests(Enum.slice(begins, 5, 6))
+    for _ <- 1..6, do: assert_receive({:block_progress, 0}, 1_000)
+    assert_requests(Enum.slice(begins, 11, 7))
+    for _ <- 1..7, do: assert_receive({:block_progress, 0}, 1_000)
+    assert_receive {:piece_complete, ^pid, 0}, 1_000
+    assert_receive {:EXIT, ^pid, :normal}, 1_000
     assert {:ok, data} == Disk.read_piece(ctx.base, info, 0)
-    # Five sustained receipts regrow 5 to 6: the seed must have seen
-    # six blocks outstanding at once, which fixed depth 5 forbids.
-    assert Agent.get(gauge, &elem(&1, 1)) >= 6
     Process.flag(:trap_exit, false)
-  end
-
-  # Each request earns its block after 20ms on a link that carries
-  # parallel blocks. One process serializes wire sends (concurrent
-  # 16KiB sends would interleave on the socket); sleepers run in
-  # parallel so latency, not serialization, sets the pace. The gauge
-  # tracks unserved requests and their high-water mark, which is the
-  # worker's depth made visible.
-  defp slow_seed(sock, data, gauge) do
-    receive do
-      {:request, begin, length} ->
-        Agent.update(gauge, fn {current, max} -> {current + 1, max(max, current + 1)} end)
-        me = self()
-
-        spawn(fn ->
-          Process.sleep(20)
-
-          Kernel.send(
-            me,
-            {:send,
-             %Piece{
-               index: 0,
-               begin: begin,
-               block: binary_part(data, begin, length)
-             }}
-          )
-
-          Agent.update(gauge, fn {current, max} -> {current - 1, max} end)
-        end)
-
-        slow_seed(sock, data, gauge)
-
-      {:send, message} ->
-        send_message(sock, message)
-        slow_seed(sock, data, gauge)
-    after
-      0 ->
-        case recv_frame(sock) do
-          {:ok, %Request{index: 0, begin: begin, length: length}, <<>>} ->
-            Kernel.send(self(), {:request, begin, length})
-            slow_seed(sock, data, gauge)
-
-          {:ok, %Cancel{}, <<>>} ->
-            slow_seed(sock, data, gauge)
-
-          {:error, _} ->
-            :ok
-        end
-    end
   end
 
   defp keepalive_loop(sock) do
