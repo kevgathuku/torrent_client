@@ -5,7 +5,7 @@ defmodule TorrentClient.WebseedWorker do
   path — SHA1 verify, then persist via the disk seam.
 
   Owned one-for-one by `TorrentClient.PeerSupervisor` next to the peer
-  workers; never registered. Reports `{:piece_complete, index}` after a
+  workers; never registered. Reports `{:piece_complete, pid, index}` after a
   verified write and `{:block_progress, index}` once the bytes land (so
   the coordinator watchdog sees liveness on slow links), then stops
   `:normal` like a finished peer worker. Anything else — fetch failure,
@@ -37,7 +37,7 @@ defmodule TorrentClient.WebseedWorker do
   `TorrentClient.WebseedHttpClient`, implementing
   `TorrentClient.WebseedHttpBehaviour`), `:disk` (default
   `TorrentClient.Disk`), `:report_to` pid receiving the same
-  `{:piece_complete, index}` / `{:block_progress, index}` reports peer
+  `{:piece_complete, pid, index}` / `{:block_progress, index}` reports peer
   workers send (default `nil`).
   """
   def start_link(opts) do
@@ -96,7 +96,7 @@ defmodule TorrentClient.WebseedWorker do
     case state.disk.write_piece(state.base_dir, state.info, state.piece_index, data) do
       :ok ->
         Logger.debug("Piece #{state.piece_index} verified via webseed and written")
-        report(state, {:piece_complete, state.piece_index})
+        report(state, {:piece_complete, self(), state.piece_index})
         {:stop, :normal, state}
 
       {:error, reason} ->

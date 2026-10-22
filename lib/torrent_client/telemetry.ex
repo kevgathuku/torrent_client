@@ -7,7 +7,9 @@ defmodule TorrentClient.Telemetry do
 
   All durations are integer milliseconds from the coordinator's clock
   seam (frozen in tests, monotonic in production). `info_hash` is the
-  raw 20-byte binary the coordinator is keyed on.
+  raw 20-byte binary the coordinator is keyed on. Completion events fire
+  on the completion report (not the later DOWN), so the final piece of a
+  download counts too.
 
   Events (all under `[:torrent_client]`):
 

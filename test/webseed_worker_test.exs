@@ -59,10 +59,10 @@ defmodule WebseedWorkerTest do
       {:ok, %Tesla.Env{status: 206, body: ctx.data}}
     end)
 
-    {_pid, ref} = monitor_start(worker_opts(ctx))
+    {pid, ref} = monitor_start(worker_opts(ctx))
 
     assert_receive {:block_progress, 0}
-    assert_receive {:piece_complete, 0}
+    assert_receive {:piece_complete, ^pid, 0}
     assert_receive {:DOWN, ^ref, :process, _, :normal}
     assert Disk.read_piece(ctx.base, ctx.info, 0) == {:ok, ctx.data}
   end
@@ -76,7 +76,7 @@ defmodule WebseedWorkerTest do
     {_pid, ref} = monitor_start(worker_opts(ctx))
 
     assert_receive {:DOWN, ^ref, :process, _, :piece_mismatch}
-    refute_received {:piece_complete, 0}
+    refute_received {:piece_complete, _, 0}
   end
 
   test "fetch failure stops with the webseed reason", ctx do
@@ -86,7 +86,7 @@ defmodule WebseedWorkerTest do
     {_pid, ref} = monitor_start(worker_opts(ctx))
 
     assert_receive {:DOWN, ^ref, :process, _, {:webseed_error, :webseed_failed}}
-    refute_received {:piece_complete, 0}
+    refute_received {:piece_complete, _, 0}
   end
 
   test "cancel in flight drops the bytes instead of writing them", ctx do
@@ -106,7 +106,7 @@ defmodule WebseedWorkerTest do
     send(pid, :go)
 
     assert_receive {:DOWN, ^ref, :process, _, :normal}
-    refute_received {:piece_complete, 0}
+    refute_received {:piece_complete, _, 0}
   end
 
   test "unknown piece stops without fetching", ctx do
@@ -120,7 +120,7 @@ defmodule WebseedWorkerTest do
     {_pid, ref} = monitor_start(worker_opts(ctx, disk: BoomDisk))
 
     assert_receive {:DOWN, ^ref, :process, _, {:disk_error, :boom}}
-    refute_received {:piece_complete, 0}
+    refute_received {:piece_complete, _, 0}
   end
 
   test "no report_to still writes and stops normally", ctx do
@@ -149,7 +149,7 @@ defmodule WebseedWorkerTest do
     send(pid, {:cancel_piece, 7})
     send(pid, :go)
 
-    assert_receive {:piece_complete, 0}
+    assert_receive {:piece_complete, ^pid, 0}
     assert_receive {:DOWN, ^ref, :process, _, :normal}
   end
 end

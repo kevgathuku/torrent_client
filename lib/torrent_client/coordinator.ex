@@ -206,8 +206,26 @@ defmodule TorrentClient.Coordinator do
     {:noreply, note_progress(state)}
   end
 
-  def handle_info({:piece_complete, index}, state) do
-    state = state |> complete_piece(index) |> note_progress()
+  # The reporter pid attributes the bytes: endgame duplicates mean
+  # several workers can hold one index, and only the reporter did this
+  # verify. Unknown pids are supervisor-restarted orphans — their bytes
+  # still count, but there is no assignment to attribute them to.
+  def handle_info({:piece_complete, pid, index}, state) do
+    state =
+      case Map.fetch(state.workers, pid) do
+        {:ok, %{peer: peer, assigned_at: assigned_at}} ->
+          emit_complete(state, peer, index, assigned_at)
+
+          state
+          |> complete_piece(index)
+          |> forget_failure(peer)
+          |> drop_worker(pid)
+
+        :error ->
+          complete_piece(state, index)
+      end
+
+    state = note_progress(state)
     cancel_duplicates(state, index)
     finish_or_assign(state)
   end
@@ -231,9 +249,11 @@ defmodule TorrentClient.Coordinator do
       {%{peer: peer, index: index, assigned_at: assigned_at}, workers} ->
         state = %{state | workers: workers}
 
+        # Verified :normal exits were already emitted on the completion
+        # report (final pieces never produce a DOWN — the coordinator
+        # stops in finish/2 first). Only failures emit here.
         state =
           if reason == :normal and verified?(state, index) do
-            emit_complete(state, peer, index, assigned_at)
             forget_failure(state, peer)
           else
             fail_assignment(state, peer, index, reason, assigned_at)
@@ -601,6 +621,8 @@ defmodule TorrentClient.Coordinator do
     %{state | failures: Map.delete(state.failures, peer_key(peer))}
   end
 
+  defp drop_worker(state, pid), do: %{state | workers: Map.delete(state.workers, pid)}
+
   # Piece latency runs assignment to report through the coordinator's
   # clock, so frozen test clocks give exact durations.
   defp emit_complete(state, {:webseed, _}, index, assigned_at) do
@@ -655,6 +677,8 @@ defmodule TorrentClient.Coordinator do
     })
   end
 
+  # Unreachable with a validated torrent (callers only ask for needed
+  # pieces, which always span); total instead of raising.
   defp piece_bytes(state, index) do
     case Torrent.piece_span(state.info, index) do
       {:ok, {_offset, size}} -> size
