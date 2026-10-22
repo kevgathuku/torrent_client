@@ -35,12 +35,16 @@ jobs:
         restore-keys: ${{ runner.os }}-mix-
     - name: Install dependencies
       run: mix deps.get
-    # Single suite run: posts to coveralls.io (token from the repo
-    # secret) and enforces the 80% gate via minimum_coverage. Set the
-    # same 80% threshold in the coveralls.io project settings so the
-    # commit status fails below it; mix.exs keeps the local gate.
-    - name: Run tests and post coverage to Coveralls
-      run: mix coveralls.post
+    # Single suite run: writes cover/lcov.info, uploaded below. The 80%
+    # gate lives in the coveralls.io project settings (commit status
+    # fails below it); mix.exs keeps the local gate for mix test --cover.
+    - name: Run tests with coverage
+      run: mix coveralls.lcov
       env:
         MIX_ENV: test
-        COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
+    - name: Post coverage to Coveralls
+      uses: coverallsapp/github-action@v2
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        file: cover/lcov.info
+        format: lcov
