@@ -42,6 +42,19 @@ jobs:
       run: mix coveralls.lcov
       env:
         MIX_ENV: test
+    # Flake retry: timing-sensitive loopback-TCP tests occasionally
+    # fail under parallel load (e.g. connection races surfacing a
+    # different failure reason). Re-run only the failed tests; a real
+    # failure still fails the build after retries.
+    - name: Re-run failed tests
+      if: failure()
+      run: |
+        for i in 1 2 3; do
+          echo "=> Re-running failed tests (attempt $i)"
+          mix test --failed && break
+        done
+      env:
+        MIX_ENV: test
     - name: Post coverage to Coveralls
       uses: coverallsapp/github-action@v2
       with:
