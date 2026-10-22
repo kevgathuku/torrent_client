@@ -209,6 +209,33 @@ defmodule TorrentClient.SessionTest do
     assert {:ok, %{verified: [0]}} = read_resume(base)
   end
 
+  test "a torrent owned by a live subtree waits out the conflict", %{sup: sup, tmp: tmp} do
+    {path, _info, _data} = craft(tmp, "cf", 1)
+    session_a = start_session(sup, watchdog_timeout: 30_000)
+    session_b = start_session(sup, watchdog_timeout: 30_000)
+
+    assert {:ok, _id} =
+             Session.add_torrent(
+               path,
+               [base_dir: Path.join(tmp, "cf-a"), peers: [blackhole()]],
+               session_a
+             )
+
+    # Same torrent under a second session: its Registry names belong to
+    # a live subtree, so the start retries until the deadline and then
+    # reports the conflict instead of succeeding or failing instantly.
+    started = System.monotonic_time(:millisecond)
+
+    assert {:error, _} =
+             Session.add_torrent(
+               path,
+               [base_dir: Path.join(tmp, "cf-b"), peers: [blackhole()]],
+               session_b
+             )
+
+    assert System.monotonic_time(:millisecond) - started >= 4_000
+  end
+
   defp kill_pid(pid) do
     ref = Process.monitor(pid)
     Process.exit(pid, :kill)
