@@ -262,7 +262,9 @@ defmodule TorrentClient.Session do
   # completion implies everything.
   defp publish_progress(entry, :torrent_complete, _progress), do: %{entry | verified: entry.total}
 
-  defp publish_progress(entry, _report, %{verified: verified, total: total}) do
+  defp publish_progress(entry, _report, %{verified: verified, total: total})
+       when total == entry.total and is_integer(verified) and verified >= 0 and
+              verified <= entry.total do
     %{entry | verified: verified, total: total}
   end
 

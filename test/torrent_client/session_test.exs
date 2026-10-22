@@ -463,6 +463,13 @@ defmodule TorrentClient.SessionTest do
     send(session, {:torrent_complete, :crypto.strong_rand_bytes(20)})
     Process.sleep(100)
     assert %{status: :exhausted} = TorrentSeeds.await_status(session, id, :exhausted, 5_000)
+
+    # A give-up with nonsense numbers keeps the published progress.
+    send(session, {:swarm_exhausted, raw, %{verified: 99, total: 7}})
+    Process.sleep(100)
+    entry = Enum.find(Session.status(session), &(&1.id == id))
+    assert entry.total == 1
+    assert entry.verified <= entry.total
   end
 
   test "adding a missing file fails without touching the table", %{session: session, tmp: tmp} do

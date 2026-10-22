@@ -203,8 +203,12 @@ defmodule TorrentClient.Disk do
       {:ok, bytes} ->
         case decode_resume(bytes) do
           {:ok, %{info_hash: ^raw, verified: indices, total: ^total, piece_length: ^plen}} ->
-            Logger.debug("resume at #{path}: #{length(indices)}/#{total} verified")
-            indices
+            # Range check here: decode only promises non-negative ints,
+            # and a full-length list with an out-of-range index would
+            # otherwise mark the torrent complete with a piece missing.
+            valid = Enum.filter(indices, &(&1 < total))
+            Logger.debug("resume at #{path}: #{length(valid)}/#{total} verified")
+            valid
 
           {:ok, _} ->
             Logger.warning("ignoring resume with mismatched identity at #{path}")

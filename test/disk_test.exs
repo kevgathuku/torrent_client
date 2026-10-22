@@ -348,6 +348,12 @@ defmodule DiskTest do
     assert [] = Disk.load_verified(Disk, base, %{identity | piece_length: 8})
     assert [] = Disk.load_verified(Disk, base, %{identity | info_hash: Utils.sha_sum("other")})
 
+    # Out-of-range indices are dropped: a full-length list with a
+    # foreign index must not mark the torrent complete.
+    assert {:ok, encoded} = Disk.encode_resume(Map.put(identity, :verified, [0, 99]))
+    assert Disk.write(Disk.resume_path(base), encoded) == :ok
+    assert [0] = Disk.load_verified(Disk, base, identity)
+
     # Corrupt bytes read as no progress.
     assert Disk.write(Disk.resume_path(base), "not a term") == :ok
     assert [] = Disk.load_verified(Disk, base, identity)
