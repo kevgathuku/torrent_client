@@ -19,6 +19,11 @@ defmodule TorrentClient.Session do
   the entry's status; give-up reports also carry the verified/total
   progress the attempt published, so an exhausted entry (and `status/1`)
   shows what survived a crash.
+
+  Every subtree is monitored: an unexpected subtree death restarts the
+  torrent from resume state up to a budget, then lands a terminal
+  exhausted entry — a crash loop can neither orphan a live subtree
+  under a stale pid nor spin forever.
   """
 
   use GenServer
@@ -26,6 +31,11 @@ defmodule TorrentClient.Session do
   require Logger
 
   alias TorrentClient.{Announcer, Config, Disk, TorrentSupervisor}
+
+  # Subtree deaths tolerated before a downloading torrent goes terminal.
+  # One death already implies a coordinator crash loop (bounded inside
+  # the subtree), so a small budget is plenty before giving up.
+  @max_subtree_restarts 3
 
   @type torrent_id :: String.t()
   @type status :: :downloading | :paused | :complete | :stalled | :exhausted
@@ -227,6 +237,68 @@ defmodule TorrentClient.Session do
     {:noreply, state}
   end
 
+  # Subtree supervisor death: the coordinator crash loop inside already
+  # exhausted its own budget, so this is a torrent-level crash. Anything
+  # but :downloading just drops the dead pid; a downloading torrent
+  # restarts from resume state until the budget runs out, then goes
+  # terminal exhausted instead of spinning (or orphaning) forever.
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    case find_by_sup_ref(state, ref) do
+      {:ok, raw, entry} -> handle_subtree_down(state, raw, entry, reason)
+      :error -> {:noreply, state}
+    end
+  end
+
+  defp find_by_sup_ref(state, ref) do
+    Enum.find_value(state.torrents, :error, fn {raw, entry} ->
+      if entry.sup_ref == ref, do: {:ok, raw, entry}
+    end)
+  end
+
+  defp handle_subtree_down(state, raw, %{status: :downloading} = entry, reason) do
+    restarts = entry.restarts + 1
+
+    if restarts > @max_subtree_restarts do
+      Logger.warning(
+        "Torrent #{entry.id} subtree died #{restarts} times (#{inspect(reason)}); giving up as exhausted"
+      )
+
+      {:noreply,
+       %{
+         state
+         | torrents:
+             Map.put(state.torrents, raw, %{entry | status: :exhausted, sup: nil, sup_ref: nil})
+       }}
+    else
+      Logger.warning(
+        "Torrent #{entry.id} subtree died (#{inspect(reason)}); restarting (#{restarts}/#{@max_subtree_restarts})"
+      )
+
+      restart_subtree(state, %{entry | sup: nil, sup_ref: nil, restarts: restarts})
+    end
+  end
+
+  defp handle_subtree_down(state, raw, entry, _reason) do
+    {:noreply,
+     %{state | torrents: Map.put(state.torrents, raw, %{entry | sup: nil, sup_ref: nil})}}
+  end
+
+  defp restart_subtree(state, entry) do
+    case drop_and_start(state, entry) do
+      {:ok, _id, state} ->
+        {:noreply, update_in(state.torrents[entry.raw], &%{&1 | restarts: entry.restarts})}
+
+      {:error, reason} ->
+        Logger.error("subtree restart failed #{entry.id}: #{inspect(reason)}")
+
+        {:noreply,
+         %{
+           state
+           | torrents: Map.put(state.torrents, entry.raw, %{entry | status: :exhausted})
+         }}
+    end
+  end
+
   defp handle_report(state, raw, report, progress) do
     status =
       case report do
@@ -250,7 +322,11 @@ defmodule TorrentClient.Session do
         entry = publish_progress(entry, report, progress)
 
         {:noreply,
-         %{state | torrents: Map.put(state.torrents, raw, %{entry | status: status, sup: nil})}}
+         %{
+           state
+           | torrents:
+               Map.put(state.torrents, raw, %{entry | status: status, sup: nil, sup_ref: nil})
+         }}
 
       :error ->
         {:noreply, state}
@@ -337,6 +413,8 @@ defmodule TorrentClient.Session do
         webseed_urls: Torrent.url_list(bytes),
         announce_timeout: Keyword.get(opts, :announce_timeout, state.announce_timeout),
         sup: nil,
+        sup_ref: nil,
+        restarts: 0,
         status: :downloading,
         verified: length(verified),
         total: length(hashes)
@@ -378,7 +456,9 @@ defmodule TorrentClient.Session do
     # survives to report the failure instead of crashing with it.
     case try_start_child(state.supervisor, coord_opts) do
       {:ok, sup} ->
-        {:ok, entry.id, put_in(state.torrents[entry.raw], %{entry | sup: sup})}
+        ref = Process.monitor(sup)
+
+        {:ok, entry.id, put_in(state.torrents[entry.raw], %{entry | sup: sup, sup_ref: ref})}
 
       {:error, _} = err ->
         Logger.error("subtree start failed #{entry.id}: #{inspect(err)}")
@@ -387,7 +467,16 @@ defmodule TorrentClient.Session do
   end
 
   defp try_start_child(supervisor, coord_opts) do
-    DynamicSupervisor.start_child(supervisor, {TorrentSupervisor, coord_opts})
+    # Temporary: a dead subtree must never restart behind the session's
+    # back (that orphans it under a stale pid). The :DOWN handler above
+    # owns the restart-or-give-up decision instead.
+    spec = %{
+      id: TorrentSupervisor,
+      start: {TorrentSupervisor, :start_link, [coord_opts]},
+      restart: :temporary
+    }
+
+    DynamicSupervisor.start_child(supervisor, spec)
   catch
     :exit, reason -> {:error, reason}
   end
@@ -460,7 +549,7 @@ defmodule TorrentClient.Session do
 
   defp pause_entry(state, raw, entry) do
     stop_sup(state, entry)
-    put_in(state.torrents[raw], %{entry | status: :paused, sup: nil})
+    put_in(state.torrents[raw], %{entry | status: :paused, sup: nil, sup_ref: nil})
   end
 
   defp resume_entry(_state, _raw, %{status: :downloading}) do
@@ -471,21 +560,25 @@ defmodule TorrentClient.Session do
     {:ok, entry.id, state}
   end
 
-  defp resume_entry(state, raw, entry) do
-    # Restart through the normal path so resume bytes reload; drop the
-    # stale entry first so the new one replaces it. Static peers and the
-    # announce timeout carry over, otherwise the swarm is re-announced
-    # with different knobs.
-    state = %{state | torrents: Map.delete(state.torrents, raw)}
+  defp resume_entry(state, _raw, entry) do
+    case drop_and_start(state, entry) do
+      {:ok, _id, state} -> {:ok, entry.id, state}
+      {:error, _} = err -> err
+    end
+  end
+
+  # Restart through the normal path so resume bytes reload; drop the
+  # stale entry first so the new one replaces it. Static peers and the
+  # announce timeout carry over, otherwise the swarm is re-announced
+  # with different knobs.
+  defp drop_and_start(state, entry) do
+    state = %{state | torrents: Map.delete(state.torrents, entry.raw)}
 
     opts =
       [base_dir: entry.base_dir, announce_timeout: entry.announce_timeout] ++
         if(entry.peers, do: [peers: entry.peers], else: [])
 
-    case start_torrent(state, entry.path, opts) do
-      {:ok, _id, state} -> {:ok, entry.id, state}
-      {:error, _} = err -> err
-    end
+    start_torrent(state, entry.path, opts)
   end
 
   # Validate every target before deleting any: a path that no longer
@@ -541,7 +634,11 @@ defmodule TorrentClient.Session do
   # The supervisor may die under us (its own shutdown); a failing
   # terminate is not a failed pause. The call must sit inside the try:
   # wrapping it in a helper catches nothing (args evaluate first).
-  defp stop_sup(state, %{sup: sup}) do
+  defp stop_sup(state, %{sup: sup, sup_ref: ref}) do
+    # Controlled stop: drop the monitor (flushed) so the :DOWN the
+    # terminate causes never reaches the crash-restart handler.
+    if ref, do: Process.demonitor(ref, [:flush])
+
     try do
       DynamicSupervisor.terminate_child(state.supervisor, sup)
     catch
