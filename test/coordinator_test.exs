@@ -1050,4 +1050,145 @@ defmodule CoordinatorTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 15_000
     Process.flag(:trap_exit, false)
   end
+
+  # -- telemetry -----------------------------------------------------------
+
+  defp attach_telemetry(test) do
+    handler = :"telemetry-test-#{:erlang.unique_integer([:positive])}"
+
+    events = [
+      [:torrent_client, :peer, :piece_complete],
+      [:torrent_client, :peer, :piece_failed],
+      [:torrent_client, :webseed, :fetch_complete],
+      [:torrent_client, :webseed, :fetch_failed],
+      [:torrent_client, :coordinator, :stall],
+      [:torrent_client, :coordinator, :give_up]
+    ]
+
+    :telemetry.attach_many(
+      handler,
+      events,
+      fn event, measurements, metadata, _ ->
+        send(test, {:telemetry, event, measurements, metadata})
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+  end
+
+  test "peer completion emits duration, bytes, and identity", ctx do
+    attach_telemetry(self())
+    {:ok, _} = ManualClock.start_link(1_000_000)
+    {listen, port} = listen!()
+    # Accept loop: both pieces dial in sequence, so one accept is not enough.
+    spawn(fn -> seed_accept_loop(listen, ctx) end)
+
+    peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
+    start_sup_unlinked(coord_opts(ctx, peers: peers, clock: ManualClock))
+
+    ManualClock.advance(1_500)
+    assert_receive {:torrent_complete, _}, 15_000
+
+    assert_received {:telemetry, [:torrent_client, :peer, :piece_complete],
+                     %{duration_ms: duration, bytes: 32_768},
+                     %{info_hash: info_hash, peer: {{127, 0, 0, 1}, ^port}}}
+                    when duration >= 1500
+
+    assert info_hash == ctx.info_hash
+  end
+
+  test "peer failure emits reason and identity", ctx do
+    attach_telemetry(self())
+    {listen, port} = listen!()
+
+    spawn(fn ->
+      refuse_loop(listen, self(), 0)
+    end)
+
+    peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
+    start_sup_unlinked(coord_opts(ctx, peers: peers, max_peer_failures: 1))
+
+    assert_receive {:swarm_exhausted, _}, 15_000
+
+    assert_received {:telemetry, [:torrent_client, :peer, :piece_failed], %{duration_ms: _},
+                     %{peer: {{127, 0, 0, 1}, ^port}, reason: :peer_closed}}
+  end
+
+  test "webseed fetch emits result, latency, and bytes", ctx do
+    attach_telemetry(self())
+    {:ok, _} = ManualClock.start_link(1_000_000)
+    [data0, data1] = ctx.data
+
+    TorrentClient.WebseedHttpMock
+    |> expect(:get, 2, fn "https://x/c.bin", [{"range", range}] ->
+      body =
+        case range do
+          "bytes=0-32767" -> data0
+          "bytes=32768-65535" -> data1
+        end
+
+      {:ok, %Tesla.Env{status: 206, body: body}}
+    end)
+
+    start_sup_unlinked(webseed_opts(ctx, clock: ManualClock))
+
+    ManualClock.advance(2_500)
+    assert_receive {:torrent_complete, _}, 15_000
+
+    assert_received {:telemetry, [:torrent_client, :webseed, :fetch_complete],
+                     %{duration_ms: duration, bytes: 32_768}, %{index: _}}
+                    when duration >= 2500
+  end
+
+  test "webseed failure emits the fetch reason", ctx do
+    attach_telemetry(self())
+
+    TorrentClient.WebseedHttpMock
+    |> stub(:get, fn _url, _headers -> {:error, :econnrefused} end)
+
+    Process.flag(:trap_exit, true)
+    start_sup_unlinked(webseed_opts(ctx, max_peer_failures: 1))
+    assert_receive {:swarm_exhausted, _}, 15_000
+    Process.flag(:trap_exit, false)
+
+    assert_received {:telemetry, [:torrent_client, :webseed, :fetch_failed], %{duration_ms: _},
+                     %{index: _, reason: {:webseed_error, :webseed_failed}}}
+  end
+
+  test "watchdog restart emits a stall event", ctx do
+    attach_telemetry(self())
+    {listen, port} = listen!()
+
+    spawn(fn ->
+      {:ok, sock} = :gen_tcp.accept(listen, 5_000)
+      seed_greet(sock, ctx.info_hash, full_bits(2))
+      :gen_tcp.recv(sock, 0, 30_000)
+    end)
+
+    peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
+
+    start_sup_unlinked(
+      coord_opts(ctx, peers: peers, watchdog_timeout: 100, max_stalls: 5, piece_timeout: 30_000)
+    )
+
+    assert_receive {:telemetry, [:torrent_client, :coordinator, :stall], %{stall_count: count},
+                    %{info_hash: info_hash}},
+                   10_000
+
+    assert count >= 1
+    assert info_hash == ctx.info_hash
+  end
+
+  test "give-up emits reason and identity", ctx do
+    attach_telemetry(self())
+    Process.flag(:trap_exit, true)
+    assert {:error, _} = TorrentSupervisor.start_link(coord_opts(ctx, peers: []))
+    Process.flag(:trap_exit, false)
+
+    assert_received {:telemetry, [:torrent_client, :coordinator, :give_up], %{},
+                     %{info_hash: info_hash, reason: :swarm_exhausted}}
+
+    assert info_hash == ctx.info_hash
+  end
 end

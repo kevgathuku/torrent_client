@@ -32,6 +32,9 @@ defmodule TorrentClient.MixProject do
       # {:dep_from_hexpm, "~> 0.3.0"},
       # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"}
       {:bento, "~> 1.0"},
+      # Standard observability seam; :telemetry.execute/3 is a no-op map
+      # lookup with no handlers attached, so this costs nothing by default.
+      {:telemetry, "~> 1.0"},
       {:tesla, "~> 1.22"},
       # optional, but recommended adapter
       {:hackney, "~> 4.0"},
