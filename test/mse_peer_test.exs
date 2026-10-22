@@ -112,7 +112,6 @@ defmodule MsePeerTest do
     send(parent, {:mse_proof, ia_ok and :binary.match(cipher, ia) == :nomatch})
 
     c4 = MSE.build_step4(secret, info_hash, select, pad_d: pad_d)
-    :ok = :gen_tcp.send(sock, c4)
     kb = MSE.stream_key(secret, info_hash, :responder)
     # The responder's ENCRYPT stream is continuous: step 4, then payload.
     # Fast-forward past the step-4 bytes before encrypting the handshake.
@@ -122,12 +121,16 @@ defmodule MsePeerTest do
       MSE.rc4_crypt(sst, Handshake.init(info_hash, @fake_id) |> Handshake.serialize())
 
     if select == :rc4 do
-      :ok = :gen_tcp.send(sock, hs_cipher)
+      # One segment: responders commonly pipeline payload right after
+      # step 4, so the worker must resync without a readahead buffer.
+      :ok = :gen_tcp.send(sock, c4 <> hs_cipher)
       ka = MSE.stream_key(secret, info_hash, :initiator)
       # Same continuity the other way: the initiator's stream runs past
       # step 3, so skip its encrypted bytes (all of rest past the proof).
       {rst, _} = MSE.rc4_crypt(MSE.rc4_new(ka), :binary.copy(<<0>>, byte_size(rest) - 20))
       serve_encrypted(sock, data, parent, rst, sst, false, <<>>)
+    else
+      :ok = :gen_tcp.send(sock, c4)
     end
   end
 

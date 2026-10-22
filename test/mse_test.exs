@@ -135,6 +135,8 @@ defmodule TorrentClient.MSETest do
     assert {:ok, :rc4} = MSE.select_crypto(0x02)
     step4 = MSE.build_step4(secret, @info_hash, :rc4, pad_d: :crypto.strong_rand_bytes(7))
     assert {:ok, 0} = MSE.scan_for_vc(step4, secret, @info_hash)
+    pad_b = :crypto.strong_rand_bytes(113)
+    assert {:ok, 113} = MSE.scan_for_vc(pad_b <> step4, secret, @info_hash)
     assert {:ok, :rc4} = MSE.parse_step4(step4, secret, @info_hash)
 
     # 5. Post-handshake stream: A encrypts, B decrypts and vice versa.

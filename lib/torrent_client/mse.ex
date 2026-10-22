@@ -242,13 +242,21 @@ defmodule TorrentClient.MSE do
 
   @doc """
   Scans `data` for the responder's VC (the initiator resync past PadB),
-  decrypting 8 bytes at each offset with a fresh stream, bounded by the
-  spec's 616-byte limit. Returns the offset where step 4 starts.
+  bounded by the spec's 616-byte limit. Returns the offset where step 4
+  starts. Decrypting any 8-byte window with a fresh stream equals XORing
+  it with the same keystream prefix, so matching the encrypted marker
+  directly is equivalent to per-offset decryption, at one KSA cost.
   """
   @spec scan_for_vc(binary(), binary(), binary()) ::
           {:ok, non_neg_integer()} | {:error, :vc_not_found}
   def scan_for_vc(data, secret, skey) do
-    scan_vc(data, stream_key(secret, skey, :responder), 0)
+    marker = rc4_oneshot(stream_key(secret, skey, :responder), @vc)
+    window = binary_part(data, 0, min(byte_size(data), @max_vc_scan + 8))
+
+    case :binary.match(window, marker) do
+      {offset, _len} -> {:ok, offset}
+      :nomatch -> {:error, :vc_not_found}
+    end
   end
 
   @doc "Picks the responder's crypto: RC4 when offered, else plaintext, else refuse."
@@ -298,19 +306,6 @@ defmodule TorrentClient.MSE do
 
       true ->
         scan_req1(:binary.part(data, 1, byte_size(data) - 1), marker, offset + 1)
-    end
-  end
-
-  defp scan_vc(data, key, offset) do
-    cond do
-      byte_size(data) < 8 or offset > @max_vc_scan ->
-        {:error, :vc_not_found}
-
-      rc4_oneshot(key, :binary.part(data, 0, 8), @rc4_drop) == @vc ->
-        {:ok, offset}
-
-      true ->
-        scan_vc(:binary.part(data, 1, byte_size(data) - 1), key, offset + 1)
     end
   end
 
