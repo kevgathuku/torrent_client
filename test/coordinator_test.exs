@@ -127,6 +127,28 @@ defmodule CoordinatorTest do
     pid
   end
 
+  # A supervisor restarts the killed coordinator under the same registry
+  # name: wait for the incarnation that is not the one we killed.
+  defp await_restart(info_hash, old, tries \\ 200) do
+    case Registry.lookup(TorrentClient.Registry, {info_hash, :coordinator}) do
+      [{pid, _}] when pid != old ->
+        pid
+
+      _ when tries > 0 ->
+        Process.sleep(20)
+        await_restart(info_hash, old, tries - 1)
+
+      _ ->
+        flunk("coordinator did not restart")
+    end
+  end
+
+  defp read_resume(base) do
+    with {:ok, bytes} <- Disk.read(Disk.resume_path(base)) do
+      Disk.decode_resume(bytes)
+    end
+  end
+
   defp coord_opts(ctx, extra) do
     Keyword.merge(
       [
@@ -189,8 +211,13 @@ defmodule CoordinatorTest do
 
   test "empty peer list stops exhausted immediately", ctx do
     Process.flag(:trap_exit, true)
-    assert {:error, _} = TorrentSupervisor.start_link(coord_opts(ctx, peers: []))
-    assert_receive {:swarm_exhausted, info_hash}, 5_000
+
+    assert {:error, _} =
+             TorrentSupervisor.start_link(coord_opts(ctx, peers: [], verified: [0]))
+
+    # The give-up report carries the progress that survived, so the
+    # session can record 1/2 verified instead of a bare status.
+    assert_receive {:swarm_exhausted, info_hash, %{verified: 1, total: 2}}, 5_000
     assert info_hash == ctx.info_hash
     Process.flag(:trap_exit, false)
   end
@@ -230,6 +257,45 @@ defmodule CoordinatorTest do
     start_sup_unlinked(coord_opts(ctx, peers: [], verified: [0, 1]))
     assert_receive {:torrent_complete, info_hash}, 5_000
     assert info_hash == ctx.info_hash
+  end
+
+  test "crash restart keeps the published verified set", ctx do
+    {listen, port} = listen!()
+
+    # Accept once and hang: the connection never serves, so the manual
+    # completions below are the only progress either incarnation sees.
+    spawn(fn ->
+      {:ok, sock} = :gen_tcp.accept(listen, 5_000)
+      :gen_tcp.recv(sock, 0, 30_000)
+    end)
+
+    peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
+    start_sup_unlinked(coord_opts(ctx, peers: peers, recv_timeout: 30_000))
+
+    pid = coord_pid(ctx.info_hash)
+
+    # First incarnation verifies piece 0 and publishes it before dying.
+    send(pid, {:piece_complete, self(), 0})
+    assert %{download: %{verified: verified}} = :sys.get_state(pid)
+    assert MapSet.member?(verified, 0)
+    assert {:ok, %{verified: [0]}} = read_resume(ctx.base)
+
+    # The restart is born with the first incarnation's start opts
+    # (verified: []), so it must reseed from the published file.
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 5_000
+
+    restarted = await_restart(ctx.info_hash, pid)
+    state = :sys.get_state(restarted)
+    assert MapSet.member?(state.download.verified, 0)
+    # Published piece 0 is not re-requested: the only worker is piece 1.
+    assert [{_, %{index: 1}}] = Map.to_list(state.workers)
+
+    # The next save keeps piece 0 instead of regressing the file.
+    send(restarted, {:piece_complete, self(), 1})
+    assert_receive {:torrent_complete, _}, 5_000
+    assert {:ok, %{verified: [0, 1]}} = read_resume(ctx.base)
   end
 
   test "refill hook fires before giving up for real", ctx do
@@ -278,13 +344,14 @@ defmodule CoordinatorTest do
     pid = coord_pid(ctx.info_hash)
     ref = Process.monitor(pid)
 
-    assert_receive {:swarm_exhausted, info_hash}, 10_000
+    assert_receive {:swarm_exhausted, info_hash, _progress}, 10_000
     assert info_hash == ctx.info_hash
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
   end
 
   test "a failed resume save logs without breaking completion", ctx do
     stub(TorrentClient.DiskMock, :write, fn _path, _data -> {:error, :boom} end)
+    stub(TorrentClient.DiskMock, :read, fn _path -> {:error, :enoent} end)
 
     {listen, port} = listen!()
 
@@ -330,7 +397,7 @@ defmodule CoordinatorTest do
     pid = coord_pid(ctx.info_hash)
     ref = Process.monitor(pid)
 
-    assert_receive {:swarm_exhausted, info_hash}, 10_000
+    assert_receive {:swarm_exhausted, info_hash, _progress}, 10_000
     assert info_hash == ctx.info_hash
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
   end
@@ -589,7 +656,7 @@ defmodule CoordinatorTest do
 
     pid = coord_pid(ctx.info_hash)
     ref = Process.monitor(pid)
-    assert_receive {:download_stalled, info_hash}, 10_000
+    assert_receive {:download_stalled, info_hash, _progress}, 10_000
     assert info_hash == ctx.info_hash
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
     # No worker is left behind to dial against the dead coordinator.
@@ -619,7 +686,7 @@ defmodule CoordinatorTest do
     assert Process.alive?(pid)
     assert :sys.get_state(pid).stall_count == 0
     ManualClock.advance(1_000)
-    assert_receive {:download_stalled, _}, 5_000
+    assert_receive {:download_stalled, _, _}, 5_000
   end
 
   test "watchdog restarts stuck workers before giving up", ctx do
@@ -869,7 +936,7 @@ defmodule CoordinatorTest do
     # add more, so this is a lower bound, not an exact count.
     assert_receive :refused, 5_000
     assert_receive {:peer_skipped, ^peer_key}, 10_000
-    assert_receive {:swarm_exhausted, info_hash}, 10_000
+    assert_receive {:swarm_exhausted, info_hash, _progress}, 10_000
     assert info_hash == ctx.info_hash
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
   end
@@ -1129,7 +1196,7 @@ defmodule CoordinatorTest do
     {:ok, pid} = TorrentClient.Coordinator.start_link(opts)
     ref = Process.monitor(pid)
 
-    assert_receive {:download_stalled, info_hash}, 5_000
+    assert_receive {:download_stalled, info_hash, _progress}, 5_000
     assert info_hash == ctx.info_hash
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
   end
@@ -1144,7 +1211,7 @@ defmodule CoordinatorTest do
     pid = coord_pid(ctx.info_hash)
     ref = Process.monitor(pid)
 
-    assert_receive {:swarm_exhausted, info_hash}, 15_000
+    assert_receive {:swarm_exhausted, info_hash, _progress}, 15_000
     assert info_hash == ctx.info_hash
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 15_000
     Process.flag(:trap_exit, false)
@@ -1222,7 +1289,7 @@ defmodule CoordinatorTest do
     peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
     start_sup_unlinked(coord_opts(ctx, peers: peers, max_peer_failures: 1))
 
-    assert_receive {:swarm_exhausted, _}, 15_000
+    assert_receive {:swarm_exhausted, _, _}, 15_000
 
     assert_received {:telemetry, [:torrent_client, :peer, :piece_failed], %{duration_ms: _},
                      %{peer: {{127, 0, 0, 1}, ^port}, reason: :peer_closed}}
@@ -1271,7 +1338,7 @@ defmodule CoordinatorTest do
 
     Process.flag(:trap_exit, true)
     start_sup_unlinked(webseed_opts(ctx, max_peer_failures: 1))
-    assert_receive {:swarm_exhausted, _}, 15_000
+    assert_receive {:swarm_exhausted, _, _}, 15_000
     Process.flag(:trap_exit, false)
 
     assert_received {:telemetry, [:torrent_client, :webseed, :fetch_failed], %{duration_ms: _},

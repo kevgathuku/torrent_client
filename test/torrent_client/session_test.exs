@@ -52,21 +52,222 @@ defmodule TorrentClient.SessionTest do
     name = :"session_#{:erlang.unique_integer([:positive])}"
 
     opts =
-      [
-        name: name,
-        supervisor: sup,
-        announce_timeout: 200,
-        max_peers: 2,
-        recv_timeout: 2_000,
-        piece_timeout: 10_000,
-        watchdog_timeout: 5_000
-      ] ++ extra
+      Keyword.merge(
+        [
+          name: name,
+          supervisor: sup,
+          announce_timeout: 200,
+          max_peers: 2,
+          recv_timeout: 2_000,
+          piece_timeout: 10_000,
+          watchdog_timeout: 5_000
+        ],
+        extra
+      )
 
     # Unique child id: the default (the module) collides on the second session.
     start_supervised!(Supervisor.child_spec({Session, opts}, id: name))
   end
 
   # -- acceptance --------------------------------------------------------------
+
+  test "repeated subtree crash then give-up reports published progress", %{
+    sup: sup,
+    tmp: tmp
+  } do
+    {path, _info, _data} = craft(tmp, "cg", 2)
+    base = Path.join(tmp, "cg")
+    session = start_session(sup, watchdog_timeout: 200)
+
+    assert {:ok, id} =
+             Session.add_torrent(path, [base_dir: base, peers: [blackhole()]], session)
+
+    raw = Base.decode16!(id)
+    assert %{status: :downloading} = await_status(session, id, :downloading, 5_000)
+
+    # First incarnation verifies piece 0 and publishes it, then crashes.
+    pid = await_coordinator(raw)
+    send(pid, {:piece_complete, self(), 0})
+    assert %{download: %{verified: verified}} = :sys.get_state(pid)
+    assert MapSet.member?(verified, 0)
+
+    restarted = crash(raw, pid)
+    assert {:ok, %{verified: [0]}} = read_resume(base)
+    refute requests?(restarted, 0)
+
+    # A second crash must not regress either: every restart reseeds from
+    # the published file rather than its stale start opts.
+    again = crash(raw, restarted)
+    assert MapSet.member?(:sys.get_state(again).download.verified, 0)
+    refute requests?(again, 0)
+
+    # The hung swarm stalls out; the exhausted-facing report carries the
+    # progress verified before the crashes, surfaced on the entry.
+    assert %{status: :stalled, verified: 1, total: 2} =
+             await_status(session, id, :stalled, 10_000)
+
+    assert {:ok, %{verified: [0]}} = read_resume(base)
+  end
+
+  # Kill the coordinator (the supervisor restarts it) and wait for the
+  # successor incarnation.
+  defp crash(raw, pid) do
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 5_000
+    await_coordinator(raw, pid)
+  end
+
+  defp await_coordinator(raw, old \\ nil, tries \\ 200) do
+    case Registry.lookup(TorrentClient.Registry, {raw, :coordinator}) do
+      [{pid, _}] when pid != old ->
+        pid
+
+      _ when tries > 0 ->
+        Process.sleep(20)
+        await_coordinator(raw, old, tries - 1)
+
+      _ ->
+        flunk("coordinator did not start")
+    end
+  end
+
+  defp requests?(pid, index) do
+    Enum.any?(:sys.get_state(pid).workers, fn {_, %{index: got}} -> got == index end)
+  end
+
+  defp read_resume(base) do
+    with {:ok, bytes} <- Disk.read(Disk.resume_path(base)) do
+      Disk.decode_resume(bytes)
+    end
+  end
+
+  # -- subtree supervisor deaths (torrent_client-y4i) ------------------------
+
+  test "subtree death restarts from published progress", %{sup: sup, tmp: tmp} do
+    {path, _info, _data} = craft(tmp, "sd", 2)
+    base = Path.join(tmp, "sd")
+    session = start_session(sup, watchdog_timeout: 30_000)
+
+    assert {:ok, id} =
+             Session.add_torrent(path, [base_dir: base, peers: [hung_peer()]], session)
+
+    raw = Base.decode16!(id)
+    assert %{status: :downloading} = await_status(session, id, :downloading, 5_000)
+
+    pid = await_coordinator(raw)
+    send(pid, {:piece_complete, self(), 0})
+    assert %{download: %{verified: verified}} = :sys.get_state(pid)
+    assert MapSet.member?(verified, 0)
+    assert {:ok, %{verified: [0]}} = read_resume(base)
+
+    old_sup = kill_subtree(sup)
+    _new_sup = await_subtree_sup(sup, old_sup)
+
+    # The session tracks the restarted subtree: still downloading,
+    # progress kept, piece 0 not re-requested.
+    assert %{status: :downloading} = await_status(session, id, :downloading, 5_000)
+    restarted = await_coordinator(raw, pid)
+    assert MapSet.member?(:sys.get_state(restarted).download.verified, 0)
+    refute requests?(restarted, 0)
+
+    # Pause stops the restarted subtree, not the dead pid: no orphan left.
+    assert {:ok, _} = Session.pause(id, session)
+    assert [] = DynamicSupervisor.which_children(sup)
+  end
+
+  test "a subtree that keeps dying lands a terminal exhausted entry", %{
+    sup: sup,
+    tmp: tmp
+  } do
+    {path, _info, _data} = craft(tmp, "sk", 2)
+    base = Path.join(tmp, "sk")
+    session = start_session(sup, watchdog_timeout: 30_000)
+
+    assert {:ok, id} =
+             Session.add_torrent(path, [base_dir: base, peers: [hung_peer()]], session)
+
+    raw = Base.decode16!(id)
+    assert %{status: :downloading} = await_status(session, id, :downloading, 5_000)
+
+    pid = await_coordinator(raw)
+    send(pid, {:piece_complete, self(), 0})
+    assert %{download: %{verified: verified}} = :sys.get_state(pid)
+    assert MapSet.member?(verified, 0)
+    assert {:ok, %{verified: [0]}} = read_resume(base)
+
+    # Three deaths restart; the fourth exhausts (budget of 3 restarts).
+    new = await_subtree_sup(sup, kill_subtree(sup))
+    new = await_subtree_sup(sup, kill_pid(new))
+    new = await_subtree_sup(sup, kill_pid(new))
+    kill_pid(new)
+
+    assert %{status: :exhausted, verified: 1, total: 2} =
+             await_status(session, id, :exhausted, 10_000)
+
+    assert [] = DynamicSupervisor.which_children(sup)
+    assert {:ok, %{verified: [0]}} = read_resume(base)
+  end
+
+  defp kill_pid(pid) do
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 5_000
+    pid
+  end
+
+  # Kill the torrent subtree supervisor (never auto-restarted: the
+  # session owns the restart decision) and return the dead pid.
+  # Dynamic children always report id :undefined, so match the modules.
+  defp kill_subtree(sup) do
+    [{_, old, _, [TorrentClient.TorrentSupervisor]}] =
+      Enum.filter(
+        DynamicSupervisor.which_children(sup),
+        &match?({_, _, _, [TorrentClient.TorrentSupervisor]}, &1)
+      )
+
+    kill_pid(old)
+  end
+
+  defp await_subtree_sup(sup, old, tries \\ 200) do
+    found =
+      Enum.find(DynamicSupervisor.which_children(sup), fn
+        {_, pid, _, [TorrentClient.TorrentSupervisor]} when pid != old -> true
+        _ -> false
+      end)
+
+    case found do
+      {_, pid, _, _} ->
+        pid
+
+      _ when tries > 0 ->
+        Process.sleep(20)
+        await_subtree_sup(sup, old, tries - 1)
+
+      _ ->
+        flunk("subtree did not restart")
+    end
+  end
+
+  # Accept-and-hang on every connection: dials never fail, so the swarm
+  # stays quiet (no give-up race) while the test kills subtrees.
+  defp hung_peer do
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, port} = :inet.port(listen)
+    spawn(fn -> accept_hang(listen) end)
+    %Peer{ip_tuple: {127, 0, 0, 1}, port: port}
+  end
+
+  defp accept_hang(listen) do
+    case :gen_tcp.accept(listen, 10_000) do
+      {:ok, sock} ->
+        spawn(fn -> :gen_tcp.recv(sock, 0, 60_000) end)
+        accept_hang(listen)
+
+      {:error, _} ->
+        :ok
+    end
+  end
 
   test "two torrents run concurrently", %{session: session, tmp: tmp} do
     {path_a, info_a, data_a} = craft(tmp, "a", 1)
@@ -389,6 +590,13 @@ defmodule TorrentClient.SessionTest do
     send(session, {:torrent_complete, :crypto.strong_rand_bytes(20)})
     Process.sleep(100)
     assert %{status: :exhausted} = TorrentSeeds.await_status(session, id, :exhausted, 5_000)
+
+    # A give-up with nonsense numbers keeps the published progress.
+    send(session, {:swarm_exhausted, raw, %{verified: 99, total: 7}})
+    Process.sleep(100)
+    entry = Enum.find(Session.status(session), &(&1.id == id))
+    assert entry.total == 1
+    assert entry.verified <= entry.total
   end
 
   test "adding a missing file fails without touching the table", %{session: session, tmp: tmp} do

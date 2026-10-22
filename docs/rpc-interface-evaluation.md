@@ -52,7 +52,7 @@ we don't have (seeding, queues, limits, per-peer stats).
 | `torrent_add` (metainfo) | `Session.add_torrent(path, opts)` | ours takes a path; add base64 `metainfo` variant |
 | `torrent_start/stop` | `resume` / `pause` | rename only |
 | `torrent_remove` + `delete_local_data` | `forget` / `remove --yes/--dry-run` | rename only |
-| `torrent_get` (fields) | `Session.status()` (id/path/base_dir/status only) | needs verified-count, total, rate fields |
+| `torrent_get` (fields) | `Session.status()` | verified/total shipped with kog.13; rate fields still missing |
 | `torrent_verify` | — | no re-verify path ( kog.13-adjacent) |
 | `torrent_reannounce` | — | re-announce is internal-only |
 | `torrent_set` (90%) | — | no limits/priorities/queues yet (kog.20/21) |

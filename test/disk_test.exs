@@ -333,6 +333,32 @@ defmodule DiskTest do
     assert {:error, _} = Disk.decode_resume(:erlang.term_to_binary(bad_tag))
   end
 
+  test "load_verified trusts only an identity-matched resume file", %{base: base} do
+    identity = %{info_hash: Utils.sha_sum("tiny"), total: 10, piece_length: 4}
+
+    # Missing file: no progress, and no crash on the next download.
+    assert [] = Disk.load_verified(Disk, base, identity)
+
+    assert {:ok, encoded} = Disk.encode_resume(Map.put(identity, :verified, [0, 2]))
+    assert Disk.write(Disk.resume_path(base), encoded) == :ok
+    assert [0, 2] = Disk.load_verified(Disk, base, identity)
+
+    # Any identity field differing drops the set: resume bytes are hostile.
+    assert [] = Disk.load_verified(Disk, base, %{identity | total: 11})
+    assert [] = Disk.load_verified(Disk, base, %{identity | piece_length: 8})
+    assert [] = Disk.load_verified(Disk, base, %{identity | info_hash: Utils.sha_sum("other")})
+
+    # Out-of-range indices are dropped: a full-length list with a
+    # foreign index must not mark the torrent complete.
+    assert {:ok, encoded} = Disk.encode_resume(Map.put(identity, :verified, [0, 99]))
+    assert Disk.write(Disk.resume_path(base), encoded) == :ok
+    assert [0] = Disk.load_verified(Disk, base, identity)
+
+    # Corrupt bytes read as no progress.
+    assert Disk.write(Disk.resume_path(base), "not a term") == :ok
+    assert [] = Disk.load_verified(Disk, base, identity)
+  end
+
   test "id_from_path derives a readable id from the torrent filename" do
     assert Disk.id_from_path("/downloads/big-buck-bunny.torrent") == {:ok, "big-buck-bunny"}
     assert Disk.id_from_path("debian.torrent") == {:ok, "debian"}

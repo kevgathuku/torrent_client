@@ -12,6 +12,8 @@ defmodule TorrentClient.Disk do
 
   @behaviour TorrentClient.DiskBehaviour
 
+  require Logger
+
   @resume_version 1
   @hex_tag "$hex"
 
@@ -175,6 +177,53 @@ defmodule TorrentClient.Disk do
   end
 
   def decode_resume(_binary), do: {:error, :invalid_resume}
+
+  @doc """
+  Read the verified indices published at `base_dir`, best effort.
+
+  `identity` carries the torrent's `:info_hash`, `:total` and
+  `:piece_length`; resume bytes are hostile input and are trusted only
+  when all three match. A missing, unreadable, corrupt or foreign file
+  yields `[]`, so a download always starts.
+  """
+  @spec load_verified(module(), Path.t(), %{
+          info_hash: binary(),
+          total: pos_integer(),
+          piece_length: pos_integer()
+        }) :: [non_neg_integer()]
+  def load_verified(disk, base_dir, %{info_hash: raw, total: total, piece_length: plen})
+      when is_binary(base_dir) and is_binary(raw) do
+    path = resume_path(base_dir)
+
+    case disk.read(path) do
+      {:error, :enoent} ->
+        Logger.debug("no resume at #{path}")
+        []
+
+      {:ok, bytes} ->
+        case decode_resume(bytes) do
+          {:ok, %{info_hash: ^raw, verified: indices, total: ^total, piece_length: ^plen}} ->
+            # Range check here: decode only promises non-negative ints,
+            # and a full-length list with an out-of-range index would
+            # otherwise mark the torrent complete with a piece missing.
+            valid = Enum.filter(indices, &(&1 < total))
+            Logger.debug("resume at #{path}: #{length(valid)}/#{total} verified")
+            valid
+
+          {:ok, _} ->
+            Logger.warning("ignoring resume with mismatched identity at #{path}")
+            []
+
+          {:error, reason} ->
+            Logger.warning("ignoring undecodable resume at #{path}: #{inspect(reason)}")
+            []
+        end
+
+      {:error, reason} ->
+        Logger.warning("ignoring unreadable resume at #{path}: #{inspect(reason)}")
+        []
+    end
+  end
 
   defp check_piece_size(data, size) do
     if byte_size(data) == size, do: :ok, else: {:error, :piece_size_mismatch}
