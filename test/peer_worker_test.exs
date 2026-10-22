@@ -31,11 +31,11 @@ defmodule PeerWorkerTest do
   bitfield, interest, choked-until-unchoked requests, hash verify, and
   disk write, all fail-closed.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import Mox
 
-  setup :set_mox_global
+  setup :set_mox_private
   setup :verify_on_exit!
 
   alias TorrentClient.{Disk, PeerWorker}

@@ -5,12 +5,12 @@ defmodule TorrentClient.SessionTest do
   from resume bytes, distrusted resume, and listen-port selection.
   Seeds and torrent crafting live in `TorrentSeeds`.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
   import Mox
 
-  setup :set_mox_global
+  setup :set_mox_private
   setup :verify_on_exit!
 
   alias TorrentClient.{Disk, Session}
