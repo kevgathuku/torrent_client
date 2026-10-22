@@ -149,6 +149,55 @@ defmodule CoordinatorTest do
     end
   end
 
+  test "a poison peer is skipped in seconds with production timeouts", ctx do
+    {listen, port} = listen!()
+
+    # Accept loop: every redial gets a handshake and a bitfield, then
+    # silence. Each connection hangs its own socket so the worker's
+    # first-byte deadline, not a close, ends the attempt.
+    spawn(fn -> poison_loop(listen, ctx.info_hash) end)
+
+    peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
+
+    start_sup_unlinked(
+      coord_opts(ctx,
+        peers: peers,
+        recv_timeout: 10_000,
+        piece_timeout: 30_000,
+        watchdog_timeout: 300_000,
+        max_stalls: 100,
+        max_peer_failures: 2
+      )
+    )
+
+    pid = coord_pid(ctx.info_hash)
+    ref = Process.monitor(pid)
+
+    # Two silent 5s first-byte cycles and the peer is skipped; without
+    # the deadline the same two strikes would cost full 30s pieces and
+    # blow past the test timeout.
+    assert_receive {:peer_skipped, {{127, 0, 0, 1}, ^port}}, 30_000
+    assert_receive {:swarm_exhausted, info_hash, _progress}, 30_000
+    assert info_hash == ctx.info_hash
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 30_000
+  end
+
+  defp poison_loop(listen, info_hash) do
+    case :gen_tcp.accept(listen, 10_000) do
+      {:ok, sock} ->
+        spawn(fn ->
+          seed_greet(sock, info_hash, full_bits(2))
+          send_message(sock, %Unchoke{})
+          hang_open(sock)
+        end)
+
+        poison_loop(listen, info_hash)
+
+      {:error, _} ->
+        :ok
+    end
+  end
+
   defp coord_opts(ctx, extra) do
     Keyword.merge(
       [

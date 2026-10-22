@@ -4,9 +4,17 @@ defmodule ScriptSock do
   # deterministic script without touching TCP.
   @behaviour TorrentClient.SocketBehaviour
 
-  def start(script), do: Agent.start_link(fn -> script end)
+  def start(script, listener \\ nil), do: Agent.start_link(fn -> {script, listener} end)
   @impl true
-  def send(sock, _bytes), do: next(sock)
+  def send(sock, bytes) do
+    case Agent.get(sock, &elem(&1, 1)) do
+      nil -> :ok
+      listener -> Kernel.send(listener, {:sock_sent, bytes})
+    end
+
+    next(sock)
+  end
+
   @impl true
   def recv(sock, _count, _timeout), do: next(sock)
   @impl true
@@ -16,7 +24,7 @@ defmodule ScriptSock do
     # Function-valued script items run in the caller when reached: a
     # gate that blocks until the test releases it, so the worker cannot
     # race past the synchronization point.
-    Agent.get_and_update(sock, fn [head | tail] -> {head, tail} end)
+    Agent.get_and_update(sock, fn {[head | tail], listener} -> {head, {tail, listener}} end)
     |> case do
       response when is_function(response, 0) -> response.()
       response -> response
@@ -293,7 +301,7 @@ defmodule PeerWorkerTest do
     assert_receive {:EXIT, ^pid, :piece_out_of_range}, 5_000
   end
 
-  test "no request goes out while choked; silence ends in timeout", ctx do
+  test "no request goes out while choked; silence ends in first-byte give-up", ctx do
     info_hash = :crypto.strong_rand_bytes(20)
     parent = self()
     {listen, port} = listen!()
@@ -306,13 +314,18 @@ defmodule PeerWorkerTest do
         {:error, :timeout} -> send(parent, :no_request)
         {:ok, _} -> send(parent, :unexpected_request)
       end
+
+      # Stay open: closing here would fail the worker with :peer_closed
+      # before the first-byte deadline it is now supposed to reach.
+      :gen_tcp.recv(sock, 0, 30_000)
     end)
 
     Process.flag(:trap_exit, true)
     {:ok, pid} = PeerWorker.start_link(worker_opts(ctx, info_hash, port, recv_timeout: 300))
 
-    assert_receive {:EXIT, ^pid, :peer_timeout}, 5_000
+    assert_receive {:EXIT, ^pid, {:piece_timeout, 0, _}}, 10_000
     assert_receive :no_request, 5_000
+    Process.flag(:trap_exit, false)
   end
 
   test "peer closing mid-download stops", ctx do
@@ -849,6 +862,240 @@ defmodule PeerWorkerTest do
       send(pid, {:cancel_piece, 0})
       send(pid, :go)
       assert_receive {:EXIT, ^pid, {:send_failed, :closed}}, 1_000
+    end
+  end
+
+  test "a timed-out block halves the pipeline and continues", ctx do
+    {info, data, hash} = five_block(ctx)
+    info_hash = :crypto.strong_rand_bytes(20)
+    parent = self()
+    peer_hs = Handshake.init(info_hash, @fake_id) |> Handshake.serialize()
+
+    pieces =
+      for begin <- [0, 16_384, 32_768, 49_152, 65_536] do
+        {:ok, b} =
+          PeerMessage.encode(%Piece{
+            index: 0,
+            begin: begin,
+            block: binary_part(data, begin, 16_384)
+          })
+
+        b
+      end
+
+    [p0, p1, p2, p3, p4] = pieces
+    <<l0::32-big, pay0::binary>> = p0
+    <<l1::32-big, pay1::binary>> = p1
+    <<l2::32-big, pay2::binary>> = p2
+    <<l3::32-big, pay3::binary>> = p3
+    <<l4::32-big, pay4::binary>> = p4
+
+    # Sends and receives interleave per round: after the timeout the
+    # worker re-requests two (halved depth), then one per delivery.
+    {:ok, script} =
+      ScriptSock.start(
+        [
+          :ok,
+          {:ok, peer_hs},
+          :ok,
+          :ok,
+          {:ok, <<0, 0, 0, 2>>},
+          {:ok, <<5, 0b10000000>>},
+          {:ok, <<0, 0, 0, 1>>},
+          {:ok, <<1>>},
+          :ok,
+          :ok,
+          :ok,
+          :ok,
+          :ok,
+          {:error, :timeout},
+          :ok,
+          :ok,
+          {:ok, <<l0::32-big>>},
+          {:ok, pay0},
+          :ok,
+          {:ok, <<l1::32-big>>},
+          {:ok, pay1},
+          :ok,
+          :ok,
+          {:ok, <<l2::32-big>>},
+          {:ok, pay2},
+          {:ok, <<l3::32-big>>},
+          {:ok, pay3},
+          {:ok, <<l4::32-big>>},
+          {:ok, pay4}
+        ],
+        parent
+      )
+
+    expect(TorrentClient.NetworkMock, :connect, fn _peer -> {:ok, script} end)
+
+    Process.flag(:trap_exit, true)
+
+    {:ok, pid} =
+      PeerWorker.start_link(
+        worker_opts(ctx, info_hash, 1,
+          network: TorrentClient.NetworkMock,
+          sock: ScriptSock,
+          report_to: parent,
+          info: info,
+          piece_hash: hash
+        )
+      )
+
+    # Handshake, Interested, Unchoke go out before any request.
+    for _ <- 1..3, do: assert_receive({:sock_sent, _}, 1_000)
+    # Full depth first: all five blocks requested up front.
+    assert_requests([0, 16_384, 32_768, 49_152, 65_536])
+    # After the timeout only two go out (5 halved to 2): the worker
+    # continues instead of stopping.
+    assert_requests([0, 16_384])
+    assert_receive {:block_progress, 0}, 1_000
+    assert_requests([32_768])
+    assert_receive {:block_progress, 0}, 1_000
+    # Two sustained receipts regrow the depth to 3, so two go out at
+    # once again — additive increase paying off mid-piece.
+    assert_requests([49_152, 65_536])
+    assert_receive {:block_progress, 0}, 1_000
+    assert_receive {:block_progress, 0}, 1_000
+    assert_receive {:block_progress, 0}, 1_000
+    assert_receive {:piece_complete, ^pid, 0}, 1_000
+    assert_receive {:EXIT, ^pid, :normal}, 1_000
+    assert {:ok, data} == Disk.read_piece(ctx.base, info, 0)
+    Process.flag(:trap_exit, false)
+  end
+
+  defp assert_requests(begins) do
+    Enum.each(begins, fn begin ->
+      assert_receive {:sock_sent, bytes}, 1_000
+      assert {:ok, %Request{index: 0, begin: ^begin}, <<>>} = PeerMessage.decode(bytes)
+    end)
+  end
+
+  test "no first byte within the budget gives up early", ctx do
+    info_hash = :crypto.strong_rand_bytes(20)
+    parent = self()
+    peer_hs = Handshake.init(info_hash, @fake_id) |> Handshake.serialize()
+
+    sleep_once = fn ->
+      Process.sleep(600)
+      {:error, :timeout}
+    end
+
+    {:ok, script} =
+      ScriptSock.start([
+        :ok,
+        {:ok, peer_hs},
+        :ok,
+        :ok,
+        {:ok, <<0, 0, 0, 2>>},
+        {:ok, <<5, 0b10000000>>},
+        {:ok, <<0, 0, 0, 1>>},
+        {:ok, <<1>>},
+        :ok,
+        :ok,
+        sleep_once
+      ])
+
+    expect(TorrentClient.NetworkMock, :connect, fn _peer -> {:ok, script} end)
+
+    Process.flag(:trap_exit, true)
+
+    {:ok, pid} =
+      PeerWorker.start_link(
+        worker_opts(ctx, info_hash, 1,
+          network: TorrentClient.NetworkMock,
+          sock: ScriptSock,
+          report_to: parent,
+          first_byte_timeout: 300
+        )
+      )
+
+    assert_receive {:piece_timeout, 0, missing}, 5_000
+    assert length(missing) == 2
+    assert_receive {:EXIT, ^pid, {:piece_timeout, 0, _}}, 5_000
+    Process.flag(:trap_exit, false)
+  end
+
+  test "pipeline depth grows with sustained throughput on slow links", ctx do
+    blocks = 16
+    length = blocks * 16_384
+    info = %{:"piece length" => length, name: "wide.bin", length: length}
+    :ok = TorrentClient.Disk.init_layout(ctx.base, info)
+    data = :crypto.strong_rand_bytes(length)
+    hash = :crypto.hash(:sha, data)
+    info_hash = :crypto.strong_rand_bytes(20)
+    parent = self()
+    {listen, port} = listen!()
+    {:ok, gauge} = Agent.start_link(fn -> {0, 0} end)
+
+    spawn(fn ->
+      sock = listen |> accept_handshake(info_hash) |> greet(info_hash)
+      send_message(sock, %Unchoke{})
+      slow_seed(sock, data, gauge)
+    end)
+
+    Process.flag(:trap_exit, true)
+
+    {:ok, pid} =
+      PeerWorker.start_link(
+        worker_opts(ctx, info_hash, port, info: info, piece_hash: hash, report_to: parent)
+      )
+
+    assert_receive {:EXIT, ^pid, :normal}, 15_000
+    assert {:ok, data} == Disk.read_piece(ctx.base, info, 0)
+    # Five sustained receipts regrow 5 to 6: the seed must have seen
+    # six blocks outstanding at once, which fixed depth 5 forbids.
+    assert Agent.get(gauge, &elem(&1, 1)) >= 6
+    Process.flag(:trap_exit, false)
+  end
+
+  # Each request earns its block after 20ms on a link that carries
+  # parallel blocks. One process serializes wire sends (concurrent
+  # 16KiB sends would interleave on the socket); sleepers run in
+  # parallel so latency, not serialization, sets the pace. The gauge
+  # tracks unserved requests and their high-water mark, which is the
+  # worker's depth made visible.
+  defp slow_seed(sock, data, gauge) do
+    receive do
+      {:request, begin, length} ->
+        Agent.update(gauge, fn {current, max} -> {current + 1, max(max, current + 1)} end)
+        me = self()
+
+        spawn(fn ->
+          Process.sleep(20)
+
+          Kernel.send(
+            me,
+            {:send,
+             %Piece{
+               index: 0,
+               begin: begin,
+               block: binary_part(data, begin, length)
+             }}
+          )
+
+          Agent.update(gauge, fn {current, max} -> {current - 1, max} end)
+        end)
+
+        slow_seed(sock, data, gauge)
+
+      {:send, message} ->
+        send_message(sock, message)
+        slow_seed(sock, data, gauge)
+    after
+      0 ->
+        case recv_frame(sock) do
+          {:ok, %Request{index: 0, begin: begin, length: length}, <<>>} ->
+            Kernel.send(self(), {:request, begin, length})
+            slow_seed(sock, data, gauge)
+
+          {:ok, %Cancel{}, <<>>} ->
+            slow_seed(sock, data, gauge)
+
+          {:error, _} ->
+            :ok
+        end
     end
   end
 

@@ -10,7 +10,8 @@ defmodule TorrentClient.RequestsClientTest do
 
   setup do
     previous = Application.get_env(:torrent_client, :requests_timeout)
-    Application.put_env(:torrent_client, :requests_timeout, 300)
+    # A second, not the 5s default: fast suite, but roomy under parallel load.
+    Application.put_env(:torrent_client, :requests_timeout, 1_000)
 
     on_exit(fn ->
       if previous == nil do

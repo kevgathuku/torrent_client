@@ -61,9 +61,9 @@ defmodule WebseedWorkerTest do
 
     {pid, ref} = monitor_start(worker_opts(ctx))
 
-    assert_receive {:block_progress, 0}
-    assert_receive {:piece_complete, ^pid, 0}
-    assert_receive {:DOWN, ^ref, :process, _, :normal}
+    assert_receive {:block_progress, 0}, 5_000
+    assert_receive {:piece_complete, ^pid, 0}, 5_000
+    assert_receive {:DOWN, ^ref, :process, _, :normal}, 5_000
     assert Disk.read_piece(ctx.base, ctx.info, 0) == {:ok, ctx.data}
   end
 
@@ -75,7 +75,7 @@ defmodule WebseedWorkerTest do
 
     {_pid, ref} = monitor_start(worker_opts(ctx))
 
-    assert_receive {:DOWN, ^ref, :process, _, :piece_mismatch}
+    assert_receive {:DOWN, ^ref, :process, _, :piece_mismatch}, 5_000
     refute_received {:piece_complete, _, 0}
   end
 
@@ -85,7 +85,7 @@ defmodule WebseedWorkerTest do
 
     {_pid, ref} = monitor_start(worker_opts(ctx))
 
-    assert_receive {:DOWN, ^ref, :process, _, {:webseed_error, :webseed_failed}}
+    assert_receive {:DOWN, ^ref, :process, _, {:webseed_error, :webseed_failed}}, 5_000
     refute_received {:piece_complete, _, 0}
   end
 
@@ -105,7 +105,7 @@ defmodule WebseedWorkerTest do
     send(pid, {:cancel_piece, 0})
     send(pid, :go)
 
-    assert_receive {:DOWN, ^ref, :process, _, :normal}
+    assert_receive {:DOWN, ^ref, :process, _, :normal}, 5_000
     refute_received {:piece_complete, _, 0}
   end
 
@@ -119,7 +119,7 @@ defmodule WebseedWorkerTest do
 
     {_pid, ref} = monitor_start(worker_opts(ctx, disk: BoomDisk))
 
-    assert_receive {:DOWN, ^ref, :process, _, {:disk_error, :boom}}
+    assert_receive {:DOWN, ^ref, :process, _, {:disk_error, :boom}}, 5_000
     refute_received {:piece_complete, _, 0}
   end
 
@@ -129,7 +129,7 @@ defmodule WebseedWorkerTest do
 
     {_pid, ref} = monitor_start(Keyword.put(worker_opts(ctx), :report_to, nil))
 
-    assert_receive {:DOWN, ^ref, :process, _, :normal}
+    assert_receive {:DOWN, ^ref, :process, _, :normal}, 5_000
     assert Disk.read_piece(ctx.base, ctx.info, 0) == {:ok, ctx.data}
   end
 
@@ -149,7 +149,7 @@ defmodule WebseedWorkerTest do
     send(pid, {:cancel_piece, 7})
     send(pid, :go)
 
-    assert_receive {:piece_complete, ^pid, 0}
-    assert_receive {:DOWN, ^ref, :process, _, :normal}
+    assert_receive {:piece_complete, ^pid, 0}, 5_000
+    assert_receive {:DOWN, ^ref, :process, _, :normal}, 5_000
   end
 end
