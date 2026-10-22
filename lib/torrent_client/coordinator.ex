@@ -41,7 +41,11 @@ defmodule TorrentClient.Coordinator do
   alias TorrentClient.{PeerWorker, Telemetry, WebseedWorker}
 
   @default_max_peers 4
-  @default_max_inflight 5
+  # Headroom for the worker's additive-increase / multiplicative-decrease
+  # pipeline: it starts at 5 and grows
+  # toward this cap on links with bandwidth to spare (a 100ms-RTT peer
+  # caps near 800KiB/s at depth 5, double that near depth 10).
+  @default_max_inflight 16
   @default_watchdog_timeout 60_000
   @default_max_stalls 3
   @default_max_peer_failures 3

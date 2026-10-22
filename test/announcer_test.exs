@@ -3,11 +3,11 @@ defmodule TorrentClient.AnnouncerTest do
   The re-announce worker against doubles, zero real I/O. Uses manjaro's real
   UDP tier URL with manjaro's info-hash (ubuntu carries no UDP tier).
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import Mox
 
-  setup :set_mox_global
+  setup :set_mox_private
   setup :verify_on_exit!
 
   @moduletag :capture_log

@@ -466,19 +466,83 @@ defmodule TorrentClient.Session do
     end
   end
 
+  # How long a start waits on a stale Registry holder before reporting
+  # the conflict: dying grandchildren free their names within
+  # milliseconds, a live owner never does.
+  @stale_name_wait_ms 5_000
+
   defp try_start_child(supervisor, coord_opts) do
     # Temporary: a dead subtree must never restart behind the session's
     # back (that orphans it under a stale pid). The :DOWN handler above
     # owns the restart-or-give-up decision instead.
-    spec = %{
+    do_start_child(
+      supervisor,
+      coord_opts,
+      System.monotonic_time(:millisecond) + @stale_name_wait_ms
+    )
+  catch
+    :exit, reason -> {:error, reason}
+  end
+
+  defp subtree_spec(coord_opts) do
+    %{
       id: TorrentSupervisor,
       start: {TorrentSupervisor, :start_link, [coord_opts]},
       restart: :temporary
     }
+  end
 
-    DynamicSupervisor.start_child(supervisor, spec)
-  catch
-    :exit, reason -> {:error, reason}
+  # A freshly killed subtree frees its Registry names a breath after
+  # its supervisor dies; a restart that wins that race meets
+  # {:already_started, dying_holder}. Wait on the holder (bounded)
+  # instead of failing: it is either dying, in which case the retry
+  # succeeds at once, or genuinely live, in which case the deadline
+  # still reports the conflict.
+  defp do_start_child(supervisor, coord_opts, deadline) do
+    case DynamicSupervisor.start_child(supervisor, subtree_spec(coord_opts)) do
+      {:ok, sup} ->
+        {:ok, sup}
+
+      {:error, {:shutdown, {:failed_to_start_child, _id, {:already_started, holder}}}} = err
+      when is_pid(holder) ->
+        if await_holder(holder, deadline),
+          do: do_start_child(supervisor, coord_opts, deadline),
+          else: err
+
+      {:error, {:already_started, holder}} = err when is_pid(holder) ->
+        if await_holder(holder, deadline),
+          do: do_start_child(supervisor, coord_opts, deadline),
+          else: err
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # True when the start is worth retrying: a dead holder means retry
+  # at once, a live one is waited on up to the deadline.
+  defp await_holder(holder, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    cond do
+      not Process.alive?(holder) ->
+        true
+
+      remaining <= 0 ->
+        false
+
+      true ->
+        ref = Process.monitor(holder)
+
+        receive do
+          {:DOWN, ^ref, :process, ^holder, _} -> :ok
+        after
+          min(remaining, 100) -> :ok
+        end
+
+        Process.demonitor(ref, [:flush])
+        true
+    end
   end
 
   defp check_new(state, raw) do

@@ -4,10 +4,10 @@ defmodule CoordinatorTest do
   internet): full completion, endgame duplication with wire Cancel,
   watchdog give-up/restart, and poison-peer exhaustion.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import Mox
-  setup :set_mox_global
+  setup :set_mox_private
   setup :verify_on_exit!
 
   defmodule ManualClock do
@@ -146,6 +146,55 @@ defmodule CoordinatorTest do
   defp read_resume(base) do
     with {:ok, bytes} <- Disk.read(Disk.resume_path(base)) do
       Disk.decode_resume(bytes)
+    end
+  end
+
+  test "a poison peer is skipped in seconds with production timeouts", ctx do
+    {listen, port} = listen!()
+
+    # Accept loop: every redial gets a handshake and a bitfield, then
+    # silence. Each connection hangs its own socket so the worker's
+    # first-byte deadline, not a close, ends the attempt.
+    spawn(fn -> poison_loop(listen, ctx.info_hash) end)
+
+    peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
+
+    start_sup_unlinked(
+      coord_opts(ctx,
+        peers: peers,
+        recv_timeout: 10_000,
+        piece_timeout: 30_000,
+        watchdog_timeout: 300_000,
+        max_stalls: 100,
+        max_peer_failures: 2
+      )
+    )
+
+    pid = coord_pid(ctx.info_hash)
+    ref = Process.monitor(pid)
+
+    # Two silent 5s first-byte cycles and the peer is skipped; without
+    # the deadline the same two strikes would cost full 30s pieces and
+    # blow past the test timeout.
+    assert_receive {:peer_skipped, {{127, 0, 0, 1}, ^port}}, 30_000
+    assert_receive {:swarm_exhausted, info_hash, _progress}, 30_000
+    assert info_hash == ctx.info_hash
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 30_000
+  end
+
+  defp poison_loop(listen, info_hash) do
+    case :gen_tcp.accept(listen, 10_000) do
+      {:ok, sock} ->
+        spawn(fn ->
+          seed_greet(sock, info_hash, full_bits(2))
+          send_message(sock, %Unchoke{})
+          hang_open(sock)
+        end)
+
+        poison_loop(listen, info_hash)
+
+      {:error, _} ->
+        :ok
     end
   end
 
@@ -863,6 +912,16 @@ defmodule CoordinatorTest do
     assert {:ok, Enum.at(data, 2)} == Disk.read_piece(ctx.base, info, 2)
   end
 
+  # Hold a connection open, swallowing whatever the worker sends: a
+  # single recv would return on the first bytes and close the socket
+  # when the process exits, failing the worker mid-test.
+  defp hang_open(sock) do
+    case :gen_tcp.recv(sock, 0, 30_000) do
+      {:ok, _} -> hang_open(sock)
+      {:error, _} -> :ok
+    end
+  end
+
   defp gain_peer_loop(listen, ctx, data) do
     case :gen_tcp.accept(listen, 15_000) do
       {:ok, sock} ->
@@ -1125,7 +1184,7 @@ defmodule CoordinatorTest do
   end
 
   test "every verified piece emits, including the final one", ctx do
-    attach_telemetry(self())
+    attach_telemetry(self(), ctx.info_hash)
     [data0, data1] = ctx.data
 
     TorrentClient.WebseedHttpMock
@@ -1156,13 +1215,13 @@ defmodule CoordinatorTest do
   end
 
   test "orphan completion credits bytes but emits nothing", ctx do
-    attach_telemetry(self())
+    attach_telemetry(self(), ctx.info_hash)
     {listen, port} = listen!()
 
     spawn(fn ->
       {:ok, sock} = :gen_tcp.accept(listen, 5_000)
       seed_greet(sock, ctx.info_hash, full_bits(2))
-      :gen_tcp.recv(sock, 0, 30_000)
+      hang_open(sock)
     end)
 
     peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
@@ -1219,7 +1278,10 @@ defmodule CoordinatorTest do
 
   # -- telemetry -----------------------------------------------------------
 
-  defp attach_telemetry(test) do
+  # Scoped to one torrent: the handler is global, so without the
+  # filter a concurrent (or lingering) coordinator for another torrent
+  # would land its events in this test's mailbox.
+  defp attach_telemetry(test, info_hash) do
     handler = :"telemetry-test-#{:erlang.unique_integer([:positive])}"
 
     events = [
@@ -1235,7 +1297,9 @@ defmodule CoordinatorTest do
       handler,
       events,
       fn event, measurements, metadata, _ ->
-        send(test, {:telemetry, event, measurements, metadata})
+        if metadata[:info_hash] == info_hash do
+          send(test, {:telemetry, event, measurements, metadata})
+        end
       end,
       nil
     )
@@ -1244,7 +1308,7 @@ defmodule CoordinatorTest do
   end
 
   test "peer completion emits duration, bytes, and identity", ctx do
-    attach_telemetry(self())
+    attach_telemetry(self(), ctx.info_hash)
     {:ok, _} = ManualClock.start_link(1_000_000)
     {listen, port} = listen!()
     test = self()
@@ -1279,7 +1343,7 @@ defmodule CoordinatorTest do
   end
 
   test "peer failure emits reason and identity", ctx do
-    attach_telemetry(self())
+    attach_telemetry(self(), ctx.info_hash)
     {listen, port} = listen!()
 
     spawn(fn ->
@@ -1296,7 +1360,7 @@ defmodule CoordinatorTest do
   end
 
   test "webseed fetch emits result, latency, and bytes", ctx do
-    attach_telemetry(self())
+    attach_telemetry(self(), ctx.info_hash)
     {:ok, _} = ManualClock.start_link(1_000_000)
     {:ok, gate} = Agent.start_link(fn -> :closed end)
     test = self()
@@ -1331,7 +1395,7 @@ defmodule CoordinatorTest do
   end
 
   test "webseed failure emits the fetch reason", ctx do
-    attach_telemetry(self())
+    attach_telemetry(self(), ctx.info_hash)
 
     TorrentClient.WebseedHttpMock
     |> stub(:get, fn _url, _headers -> {:error, :econnrefused} end)
@@ -1346,7 +1410,7 @@ defmodule CoordinatorTest do
   end
 
   test "watchdog restart emits a stall event", ctx do
-    attach_telemetry(self())
+    attach_telemetry(self(), ctx.info_hash)
     {listen, port} = listen!()
 
     spawn(fn ->
@@ -1370,7 +1434,7 @@ defmodule CoordinatorTest do
   end
 
   test "give-up emits reason and identity", ctx do
-    attach_telemetry(self())
+    attach_telemetry(self(), ctx.info_hash)
     Process.flag(:trap_exit, true)
     assert {:error, _} = TorrentSupervisor.start_link(coord_opts(ctx, peers: []))
     Process.flag(:trap_exit, false)

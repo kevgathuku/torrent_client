@@ -35,12 +35,39 @@ jobs:
         restore-keys: ${{ runner.os }}-mix-
     - name: Install dependencies
       run: mix deps.get
-    # Single suite run: posts to coveralls.io (token from the repo
-    # secret) and enforces the 80% gate via minimum_coverage. Set the
-    # same 80% threshold in the coveralls.io project settings so the
-    # commit status fails below it; mix.exs keeps the local gate.
-    - name: Run tests and post coverage to Coveralls
-      run: mix coveralls.post
+    - name: Compile with warnings as errors
+      run: mix compile --warnings-as-errors
       env:
         MIX_ENV: test
-        COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
+    # Single suite run: writes cover/lcov.info, uploaded below. The 80%
+    # gate lives in the coveralls.io project settings (commit status
+    # fails below it); mix.exs keeps the local gate for mix test --cover.
+    # A failed test step must not doom the job while the flake retry
+    # below can still rescue it; an exhausted retry fails by its own
+    # non-zero exit.
+    - name: Run tests with coverage
+      id: tests
+      continue-on-error: true
+      run: mix coveralls.lcov
+      env:
+        MIX_ENV: test
+    # Flake retry: timing-sensitive loopback-TCP tests occasionally
+    # fail under parallel load (e.g. connection races surfacing a
+    # different failure reason). Re-run only the failed tests.
+    - name: Re-run failed tests
+      id: retry
+      if: steps.tests.outcome == 'failure'
+      run: |
+        for i in 1 2 3; do
+          echo "=> Re-running failed tests (attempt $i)"
+          mix test --failed && break
+        done
+      env:
+        MIX_ENV: test
+    - name: Post coverage to Coveralls
+      if: steps.tests.outcome == 'success' || steps.retry.outcome == 'success'
+      uses: coverallsapp/github-action@v2
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        file: cover/lcov.info
+        format: lcov

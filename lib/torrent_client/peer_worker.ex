@@ -39,11 +39,15 @@ defmodule TorrentClient.PeerWorker do
     Unchoke
   }
 
+  alias TorrentClient.PeerPipeline
+
   @block_size 16_384
   @handshake_size 68
   @recv_timeout 10_000
   @max_inflight 5
   @piece_timeout 30_000
+  @first_byte_timeout 5_000
+  @max_consecutive_timeouts 3
 
   @doc """
   Start an unnamed worker downloading `piece_index` from `peer`.
@@ -56,9 +60,17 @@ defmodule TorrentClient.PeerWorker do
   `TorrentClient.GenTcpSocket`, implementing
   `TorrentClient.SocketBehaviour`), `:clock` (default
   `TorrentClient.Clock`), `:recv_timeout` ms (default
-  #{@recv_timeout}). Pipeline: `:max_inflight` outstanding block requests
-  (default #{@max_inflight}), `:piece_timeout` ms for the whole piece
-  (default #{@piece_timeout}), `:report_to` pid receiving
+  #{@recv_timeout}). Pipeline: up to `:max_inflight` outstanding block
+  requests (default #{@max_inflight}), adapting to the peer by additive
+  increase / multiplicative decrease (one more outstanding block per
+  window of sustained receipts, halved on timeout) with the receive
+  timeout derived from observed block latency, so fast links deepen
+  past the starting depth of 5 and jittery ones back off instead of
+  dying. `:piece_timeout` ms for the whole piece
+  (default #{@piece_timeout}), `:first_byte_timeout` ms for the first
+  received block (default #{@first_byte_timeout}: a peer that sends
+  nothing that fast is poison, fail it without waiting out the piece),
+  `:report_to` pid receiving
   `{:piece_timeout, index, missing}` on give-up (default `nil`). When set,
   it also receives `{:piece_complete, pid, index}` after a verified write
   (`pid` is the reporting worker, so the coordinator attributes bytes
@@ -101,9 +113,13 @@ defmodule TorrentClient.PeerWorker do
       recv_timeout: Keyword.get(opts, :recv_timeout, @recv_timeout),
       max_inflight: Keyword.get(opts, :max_inflight, @max_inflight),
       piece_timeout: Keyword.get(opts, :piece_timeout, @piece_timeout),
+      first_byte_timeout: Keyword.get(opts, :first_byte_timeout, @first_byte_timeout),
+      pipeline: PeerPipeline.init(Keyword.get(opts, :max_inflight, @max_inflight)),
       report_to: Keyword.get(opts, :report_to, nil),
       socket: nil,
       deadline_at: nil,
+      served_at: nil,
+      last_send_at: nil,
       peer_state: PeerState.init(),
       bitfield_seen: false,
       blocks: [],
@@ -128,7 +144,14 @@ defmodule TorrentClient.PeerWorker do
 
         case handshake(state) do
           :ok ->
-            serve(%{state | deadline_at: state.clock.monotonic_ms() + state.piece_timeout})
+            now = state.clock.monotonic_ms()
+
+            serve(%{
+              state
+              | deadline_at: now + state.piece_timeout,
+                served_at: now,
+                last_send_at: now
+            })
 
           {:error, reason} ->
             {:stop, reason, state}
@@ -194,6 +217,7 @@ defmodule TorrentClient.PeerWorker do
     with {:cont, state} <- drain_cancel(state) do
       cond do
         complete?(state) -> verify_and_write(state)
+        first_byte_due?(state) -> give_up(state)
         deadline_exceeded?(state) -> give_up(state)
         known_missing?(state) -> {:stop, :normal, state}
         true -> fill_pipeline(state)
@@ -268,7 +292,7 @@ defmodule TorrentClient.PeerWorker do
   end
 
   defp sendable?(state) do
-    not state.peer_state.peer_choking and length(state.inflight) < state.max_inflight and
+    not state.peer_state.peer_choking and length(state.inflight) < state.pipeline.depth and
       next_block(state) != nil and peer_may_have?(state)
   end
 
@@ -291,8 +315,15 @@ defmodule TorrentClient.PeerWorker do
       request = %Request{index: state.piece_index, begin: begin, length: length}
 
       case send_message(state.sock, state.socket, request) do
-        :ok -> fill_pipeline(%{state | inflight: [{begin, length} | state.inflight]})
-        {:error, reason} -> {:stop, reason, state}
+        :ok ->
+          fill_pipeline(%{
+            state
+            | inflight: [{begin, length} | state.inflight],
+              last_send_at: state.clock.monotonic_ms()
+          })
+
+        {:error, reason} ->
+          {:stop, reason, state}
       end
     else
       await_message(state)
@@ -305,10 +336,22 @@ defmodule TorrentClient.PeerWorker do
         dispatch(state, message)
 
       {:error, :peer_timeout} ->
-        if deadline_exceeded?(state) do
-          give_up(state)
-        else
-          {:stop, :peer_timeout, state}
+        cond do
+          deadline_exceeded?(state) ->
+            give_up(state)
+
+          state.pipeline.consecutive_timeouts + 1 >= @max_consecutive_timeouts ->
+            # A timeout mid-frame leaves the stream desynchronized, so
+            # sustained silence can never complete: give up and let a
+            # fresh connection retry instead of spinning to the deadline.
+            give_up(%{state | pipeline: PeerPipeline.note_timeout(state.pipeline)})
+
+          true ->
+            # Congestion signal, not death: halve the depth, drop the
+            # unanswered batch for re-request, and keep serving. Poison
+            # peers (zero bytes) trip the first-byte deadline instead.
+            pipeline = PeerPipeline.note_timeout(state.pipeline)
+            serve(%{state | pipeline: pipeline, inflight: []})
         end
 
       {:error, reason} ->
@@ -360,7 +403,10 @@ defmodule TorrentClient.PeerWorker do
     if index == state.piece_index and
          List.keyfind(state.blocks, begin, 0) == {begin, byte_size(block)} and
          Torrent.validate_block(state.info, index, begin, block) == :ok do
-      state = %{state | received: Map.put(state.received, begin, block)}
+      now = state.clock.monotonic_ms()
+
+      pipeline = PeerPipeline.note_received(state.pipeline, state.last_send_at, now)
+      state = %{state | received: Map.put(state.received, begin, block), pipeline: pipeline}
       report(state, {:block_progress, index})
       serve(%{state | inflight: List.keydelete(state.inflight, begin, 0)})
     else
@@ -401,11 +447,25 @@ defmodule TorrentClient.PeerWorker do
   defp report(%{report_to: nil}, _message), do: :ok
   defp report(%{report_to: pid}, message), do: send(pid, message)
 
-  # Each receive is bounded by the nearer of the per-message timeout and
-  # the remaining piece deadline, so a silent peer trips the deadline
-  # instead of hanging on a full recv timeout.
+  # Each receive is bounded by the nearer of the adaptive per-message
+  # timeout (triple the observed block latency within floor and the
+  # configured ceiling) and the remaining piece deadline, so a silent
+  # peer trips the deadline instead of hanging on a full recv timeout.
   defp recv_budget(state) do
-    min(state.recv_timeout, max(state.deadline_at - state.clock.monotonic_ms(), 0))
+    recv_timeout = PeerPipeline.recv_timeout(state.pipeline, state.recv_timeout)
+    min(recv_timeout, max(state.deadline_at - state.clock.monotonic_ms(), 0))
+  end
+
+  # Zero bytes within the first-byte budget is the poison shape: fail
+  # the piece fast so the coordinator's failure budget skips the peer
+  # in seconds instead of after full piece deadlines.
+  defp first_byte_due?(state) do
+    PeerPipeline.first_byte_due?(
+      state.pipeline,
+      state.served_at,
+      state.clock.monotonic_ms(),
+      state.first_byte_timeout
+    )
   end
 
   defp recv_message(state) do

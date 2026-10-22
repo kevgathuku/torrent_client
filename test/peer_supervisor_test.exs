@@ -3,11 +3,11 @@ defmodule PeerSupervisorTest do
   The peer supervisor through the real supervisor: unnamed children,
   crash restarts with a fresh worker, and a bounded restart storm.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import Mox
 
-  setup :set_mox_global
+  setup :set_mox_private
   setup :verify_on_exit!
 
   alias TorrentClient.PeerSupervisor
