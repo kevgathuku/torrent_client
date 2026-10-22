@@ -27,6 +27,7 @@ in `.agents/skills/` and are not tracked here.)
 
 - Crash-restarted downloads keep the pieces they already published: the coordinator reseeds its verified set from the torrent's `.resume` file instead of the stale start opts, and give-up reports carry verified/total so `Session.status/1` and `mix torrent status` show the progress that survived. In-flight block loss (kog.33) is unchanged.
 - A torrent whose supervisor keeps dying no longer slips out of session control: the session monitors every subtree, restarts a crashed one from resume state, and marks it exhausted after 3 restarts — so pause/forget always stop the live subtree and a crash loop ends in a terminal entry instead of spinning silently.
+- Tracker HTTP queries carry their own 5s inner timeout: one blackholed tracker fails fast instead of eating the whole announce window (the fan-out timeout stays the outer bound).
 
 - Piece-hash slicing aligned to 20-byte boundaries past the first piece (every later piece verified against the wrong hash, so multi-piece downloads stalled on endless mismatches).
 - HTTP tracker URLs percent-encode binary fields byte-wise (was space-as-`+`, corrupting info-hashes containing `0x20`).
