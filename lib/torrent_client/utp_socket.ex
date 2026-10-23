@@ -321,6 +321,20 @@ defmodule TorrentClient.UtpSocket do
   # -- acknowledgement ---------------------------------------------------
 
   defp ack_out(state, ack_nr, header, opts \\ []) do
+    # Stale or ahead ACKs retire nothing: a reordered packet carrying
+    # an older ack would otherwise flush the whole send buffer (the
+    # window wraps to ~65k), and a lying ack would advance past unsent
+    # sequences. Equality still flows through, so duplicate ACKs keep
+    # counting toward fast resend.
+    if Utp.seq_lt(ack_nr, state.last_ack_nr) or
+         Utp.seq_lt(state.seq_next - 1 &&& 0xFFFF, ack_nr) do
+      state
+    else
+      retire_acked(state, ack_nr, header, opts)
+    end
+  end
+
+  defp retire_acked(state, ack_nr, header, opts) do
     count_dup = Keyword.get(opts, :count_dup, true)
     {newly, rest} = take_acked(state.send_buf, state.last_ack_nr, ack_nr)
     oldest = oldest_seq(state.send_buf)

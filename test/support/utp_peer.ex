@@ -63,6 +63,13 @@ defmodule UtpPeer do
         send_raw(st, :data, bytes, seq)
         loop(st)
 
+      {:forge_state, ack} ->
+        # Raw STATE with a forged ack: reordered or lying peers.
+        # Payload-less, so our recv stream stays untouched; only the
+        # ack path reacts.
+        send_raw(st, :state, <<>>, st.seq_next, nil, ack)
+        loop(st)
+
       {:send_rst} ->
         send_raw(st, :reset, <<>>, st.seq_next)
         loop(st)
@@ -225,7 +232,7 @@ defmodule UtpPeer do
     %{st | reply_ts: header.ts, reply_micro: now - header.ts &&& 0xFFFFFFFF}
   end
 
-  defp send_raw(st, type, payload, seq, sack \\ nil) do
+  defp send_raw(st, type, payload, seq, sack \\ nil, ack_override \\ nil) do
     opts = if sack == nil, do: [], else: [sack: sack]
 
     header = %{
@@ -235,7 +242,7 @@ defmodule UtpPeer do
       ts_diff: st.reply_micro,
       wnd: 262_144,
       seq: seq,
-      ack: st.ack_nr
+      ack: if(is_nil(ack_override), do: st.ack_nr, else: ack_override)
     }
 
     {ip, port} = st.peer

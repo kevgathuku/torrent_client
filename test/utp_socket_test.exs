@@ -123,6 +123,49 @@ defmodule UtpSocketTest do
     send(peer, {:close})
   end
 
+  test "ignores stale and ahead acks instead of retiring the send buffer" do
+    parent = self()
+    {peer, port} = UtpPeer.start(parent, %{auto_ack: false})
+    {:ok, pid} = UtpSocket.connect({127, 0, 0, 1}, port, [])
+    assert_receive {:peer_syn, _conn, 1}, 2_000
+
+    # Two requests in flight, both retired by the ack on the reply DATA.
+    :ok = UtpSocket.send(pid, "aa")
+    :ok = UtpSocket.send(pid, "bb")
+    assert_receive {:peer_data, 2, "aa"}, 2_000
+    assert_receive {:peer_data, 3, "bb"}, 2_000
+    send(peer, {:send_bytes, "x"})
+    assert {:ok, "x"} = UtpSocket.recv(pid, 1, 3_000)
+    assert_eventually(fn -> :sys.get_state(pid).send_buf == [] end)
+    assert :sys.get_state(pid).last_ack_nr == 3
+
+    # A third request goes out; only forged STATEs follow.
+    :ok = UtpSocket.send(pid, "cc")
+    assert_receive {:peer_data, 4, "cc"}, 2_000
+
+    # Stale ack (behind last_ack_nr): retires nothing, moves nothing.
+    send(peer, {:forge_state, 2})
+    Process.sleep(300)
+    state = :sys.get_state(pid)
+    assert length(state.send_buf) == 1
+    assert state.last_ack_nr == 3
+
+    # Ahead ack (past everything sent): same, nothing retired.
+    send(peer, {:forge_state, 9})
+    Process.sleep(300)
+    state = :sys.get_state(pid)
+    assert length(state.send_buf) == 1
+    assert state.last_ack_nr == 3
+
+    # The connection still converges on the real ack.
+    send(peer, {:send_bytes, "y"})
+    assert {:ok, "y"} = UtpSocket.recv(pid, 1, 3_000)
+    assert_eventually(fn -> :sys.get_state(pid).send_buf == [] end)
+    assert :sys.get_state(pid).last_ack_nr == 4
+    :ok = UtpSocket.close(pid)
+    send(peer, {:close})
+  end
+
   test "buffers gaps, SACKs them, and completes on FIN" do
     parent = self()
     {peer, port} = UtpPeer.start(parent)

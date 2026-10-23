@@ -193,8 +193,10 @@ defmodule TorrentClient.PeerWorker do
 
       {:error, {:mse_failed, _}} when state.encryption == :prefer_mse ->
         # The optimistic MSE bytes desynchronize this stream, so the
-        # fallback needs a fresh connection, not a re-read.
-        if is_port(socket), do: state.sock.close(socket)
+        # fallback needs a fresh connection, not a re-read. The failed
+        # socket is always released here — ports and pids alike — or a
+        # pid-backed (uTP) first dial leaks behind the retry.
+        state.sock.close(socket)
 
         with {:ok, retry} <- connect(state),
              {:ok, _} = ok <- greet(%{state | socket: retry, crypto: nil}, :plaintext) do

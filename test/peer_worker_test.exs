@@ -18,7 +18,16 @@ defmodule ScriptSock do
   @impl true
   def recv(sock, _count, _timeout), do: next(sock)
   @impl true
-  def close(_sock), do: :ok
+  def close(sock) do
+    # Report closes to the listener like sends, so tests can assert
+    # the worker releases each connection it opens.
+    case Agent.get(sock, &elem(&1, 1)) do
+      nil -> :ok
+      listener -> Kernel.send(listener, {:sock_closed, sock})
+    end
+
+    :ok
+  end
 
   defp next(sock) do
     # Function-valued script items run in the caller when reached: a
@@ -228,6 +237,71 @@ defmodule PeerWorkerTest do
       )
 
     assert_receive {:EXIT, ^pid, {:send_failed, _}}, 1_000
+  end
+
+  test "prefer_mse fallback closes a pid socket before redialing", ctx do
+    info_hash = :crypto.strong_rand_bytes(20)
+    peer_hs = Handshake.init(info_hash, @fake_id) |> Handshake.serialize()
+    parent = self()
+
+    # First dial speaks no MSE: 96 zero bytes fail the DH exchange.
+    {:ok, sock1} = ScriptSock.start([:ok, {:ok, <<0::size(768)>>}], parent)
+
+    {:ok, b0} =
+      PeerMessage.encode(%Piece{index: 0, begin: 0, block: binary_part(ctx.data, 0, 16_384)})
+
+    {:ok, b1} =
+      PeerMessage.encode(%Piece{
+        index: 0,
+        begin: 16_384,
+        block: binary_part(ctx.data, 16_384, 16_384)
+      })
+
+    <<len0::32-big, payload0::binary>> = b0
+    <<len1::32-big, payload1::binary>> = b1
+
+    {:ok, sock2} =
+      ScriptSock.start(
+        [
+          :ok,
+          {:ok, peer_hs},
+          :ok,
+          :ok,
+          {:ok, <<0, 0, 0, 2>>},
+          {:ok, <<5, 0b10000000>>},
+          {:ok, <<0, 0, 0, 1>>},
+          {:ok, <<1>>},
+          :ok,
+          :ok,
+          {:ok, <<len0::32-big>>},
+          {:ok, payload0},
+          {:ok, <<len1::32-big>>},
+          {:ok, payload1}
+        ],
+        parent
+      )
+
+    {:ok, order} = Agent.start_link(fn -> [sock1, sock2] end)
+
+    expect(TorrentClient.NetworkMock, :connect, 2, fn _peer ->
+      Agent.get_and_update(order, fn [h | t] -> {{:ok, h}, t} end)
+    end)
+
+    Process.flag(:trap_exit, true)
+
+    {:ok, pid} =
+      PeerWorker.start_link(
+        worker_opts(ctx, info_hash, 1,
+          network: TorrentClient.NetworkMock,
+          sock: ScriptSock,
+          encryption: :prefer_mse
+        )
+      )
+
+    assert_receive {:EXIT, ^pid, :normal}, 8_000
+    # The failed first connection is released, not leaked behind the retry.
+    assert_receive {:sock_closed, ^sock1}, 1_000
+    assert {:ok, ctx.data} == Disk.read_piece(ctx.base, ctx.info, 0)
   end
 
   test "rejects an invalid piece assignment at start", ctx do
