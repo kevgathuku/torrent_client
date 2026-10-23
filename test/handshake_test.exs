@@ -41,4 +41,10 @@ defmodule HandshakeTest do
 
     assert Handshake.deserialize(result) == {:error, :invalid_byte_size}
   end
+
+  test "rejects a bogus length prefix instead of crashing" do
+    # pstrlen 0 in a 68-byte stream: the old match would raise MatchError.
+    assert Handshake.deserialize(<<0>> <> :binary.copy(<<0>>, 67)) ==
+             {:error, :bad_handshake}
+  end
 end

@@ -776,4 +776,38 @@ defmodule TorrentClient.SessionTest do
     session = start_session(sup, config_path: cfg)
     assert Session.port(session) == free
   end
+
+  test "malformed config fails the start instead of booting deaf", %{sup: sup, tmp: tmp} do
+    cfg = Path.join(tmp, "bad.conf")
+    File.write!(cfg, "port=banana\n")
+    name = :"badcfg_#{:erlang.unique_integer([:positive])}"
+
+    Process.flag(:trap_exit, true)
+    assert {:error, _} = Session.start_link(name: name, supervisor: sup, config_path: cfg)
+  end
+
+  test "add replies while a hanging tracker is still unanswered", %{sup: sup, tmp: tmp} do
+    {:ok, hang} = :gen_udp.open(0, [:binary])
+    {:ok, hang_port} = :inet.port(hang)
+    on_exit(fn -> :gen_udp.close(hang) end)
+
+    name = :"nonblock_#{:erlang.unique_integer([:positive])}"
+
+    session =
+      start_supervised!(
+        Supervisor.child_spec({Session, [name: name, supervisor: sup, max_peers: 2]}, id: name)
+      )
+
+    {path, _info, _data} = craft(tmp, "nb", 1, "udp://127.0.0.1:#{hang_port}/announce")
+    base = Path.join(tmp, "nb")
+    started = System.monotonic_time(:millisecond)
+
+    # A 5 s announce budget: the old sync add blocked past it, so a fast
+    # reply plus a visible pending entry pins the session staying responsive.
+    assert {:ok, id} =
+             Session.add_torrent(path, [base_dir: base, announce_timeout: 5_000], session)
+
+    assert System.monotonic_time(:millisecond) - started < 4_000
+    assert %{status: :downloading} = Enum.find(Session.status(session), &(&1.id == id))
+  end
 end

@@ -219,12 +219,11 @@ defmodule Torrent do
   defp file_length(_file), do: {:error, :invalid_file_length}
 
   @doc """
-  Get the remaining length from a Bento torrent file
-  Handles both single file torrents and multi-file torrents
+  Total torrent bytes. Accepts the bento struct or its info map, so
+  callers pass whatever they hold instead of unwrapping `.info`.
   """
-  def remaining(bento_torrent) do
-    info_total(bento_torrent.info)
-  end
+  def remaining(%{info: info}), do: info_total(info)
+  def remaining(info) when is_map(info), do: info_total(info)
 
   defp info_total(%{files: files}) when is_list(files) do
     Enum.reduce(files, 0, fn file, acc -> acc + file.length end)
@@ -262,6 +261,8 @@ defmodule Torrent do
   """
   def info_hash(info) when is_map(info) do
     info
+    # Bento encodes nil as the string "null", so absent keys must go
+    # before encoding or the hash covers bytes that were never on the wire.
     |> Map.reject(fn {_key, value} -> is_nil(value) end)
     |> Bento.encode!()
     |> Utils.sha_sum()

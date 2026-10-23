@@ -6,7 +6,6 @@ defmodule Peer do
   `ip_tuple` is a 4-tuple for IPv4 and an 8-tuple of 16-bit segments for IPv6.
   """
   defstruct [:port, :ip_tuple]
-  require Logger
 
   @type t :: %__MODULE__{ip_tuple: tuple(), port: non_neg_integer()}
 
@@ -101,7 +100,7 @@ defmodule Peer do
   end
 
   defp parse_list(_binary, _size, _fun, _acc) do
-    {:error, "malformed compact peers: truncated entry"}
+    {:error, :truncated_peers}
   end
 
   @doc """
@@ -112,8 +111,6 @@ defmodule Peer do
       ip3::8-unsigned-big-integer, port::16-integer-big-unsigned>> = data
 
     ip_tuple = {ip0, ip1, ip2, ip3}
-
-    Logger.info("Parsed peer IP: #{inspect(ip_tuple)} Port: #{port}")
 
     %Peer{ip_tuple: ip_tuple, port: port}
   end
