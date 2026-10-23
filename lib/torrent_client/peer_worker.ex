@@ -59,7 +59,9 @@ defmodule TorrentClient.PeerWorker do
   `TorrentClient.Disk`), `:sock` (default
   `TorrentClient.GenTcpSocket`, implementing
   `TorrentClient.SocketBehaviour`), `:clock` (default
-  `TorrentClient.Clock`), `:encryption` (`:plaintext` default;
+  `TorrentClient.Clock`), `:transport` (`:tcp` default, `:utp` pairs
+  `UtpNetwork`+`UtpSocket` unless `:network`/`:sock` are explicit),
+  `:encryption` (`:plaintext` default;
   `:prefer_mse` tries the MSE/PE encrypted handshake and falls back to
   plaintext on a fresh connection when the peer speaks none;
   `:require_mse` fails closed instead), `:recv_timeout` ms (default
@@ -101,6 +103,13 @@ defmodule TorrentClient.PeerWorker do
 
   @impl true
   def init(opts) do
+    case Keyword.get(opts, :transport, :tcp) do
+      transport when transport in [:tcp, :utp] -> init_validated(opts, transport)
+      _other -> {:stop, :invalid_transport}
+    end
+  end
+
+  defp init_validated(opts, transport) do
     state = %{
       peer: Keyword.fetch!(opts, :peer),
       info_hash: Keyword.fetch!(opts, :info_hash),
@@ -109,9 +118,10 @@ defmodule TorrentClient.PeerWorker do
       piece_index: Keyword.fetch!(opts, :piece_index),
       piece_hash: Keyword.fetch!(opts, :piece_hash),
       base_dir: Keyword.fetch!(opts, :base_dir),
-      network: Keyword.get(opts, :network, TorrentClient.Network),
+      transport: transport,
+      network: Keyword.get(opts, :network, transport_network(transport)),
       disk: Keyword.get(opts, :disk, TorrentClient.Disk),
-      sock: Keyword.get(opts, :sock, TorrentClient.GenTcpSocket),
+      sock: Keyword.get(opts, :sock, transport_sock(transport)),
       clock: Keyword.get(opts, :clock, TorrentClient.Clock),
       encryption: Keyword.get(opts, :encryption, :plaintext),
       crypto: nil,
@@ -144,6 +154,12 @@ defmodule TorrentClient.PeerWorker do
       {:stop, :invalid_encryption}
     end
   end
+
+  defp transport_network(:tcp), do: TorrentClient.Network
+  defp transport_network(:utp), do: TorrentClient.UtpNetwork
+
+  defp transport_sock(:tcp), do: TorrentClient.GenTcpSocket
+  defp transport_sock(:utp), do: TorrentClient.UtpSocket
 
   @impl true
   def handle_continue(:connect, state) do

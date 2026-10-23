@@ -20,7 +20,8 @@ defmodule UtpPeer do
       test: test,
       state: :idle,
       ignore_acks: Map.get(opts, :ignore_acks, 0),
-      drop_rx: MapSet.new(Map.get(opts, :drop_rx, []))
+      drop_rx: MapSet.new(Map.get(opts, :drop_rx, [])),
+      auto_ack: Map.get(opts, :auto_ack, true)
     }
 
     pid = spawn_link(fn -> loop(base) end)
@@ -50,6 +51,18 @@ defmodule UtpPeer do
       {:send_fin} ->
         loop(peer_fin(st))
 
+      {:skip_seq} ->
+        # Leave a hole in our sequence stream (the next send uses
+        # seq_next + 1), so the other side must buffer and SACK.
+        loop(%{st | seq_next: st.seq_next + 1 &&& 0xFFFF})
+
+      {:send_at_seq, seq, bytes} ->
+        # Raw DATA at an explicit sequence: fills holes, duplicates
+        # old packets, or probes far-ahead windows. Never advances
+        # seq_next, so the normal stream stays coherent.
+        send_raw(st, :data, bytes, seq)
+        loop(st)
+
       {:send_rst} ->
         send_raw(st, :reset, <<>>, st.seq_next)
         loop(st)
@@ -73,6 +86,7 @@ defmodule UtpPeer do
       app: <<>>,
       ignore_acks: st.ignore_acks,
       drop_rx: st.drop_rx,
+      auto_ack: st.auto_ack,
       send_queue: [],
       reply_ts: nil,
       reply_micro: 0,
@@ -112,6 +126,8 @@ defmodule UtpPeer do
         ack_nr: header.seq
     }
 
+    # The SYN is a real sample: timestamp from it like any packet.
+    st = note_ts(st, header)
     send_raw(st, :state, <<>>, st.seq_next)
     %{st | state: :ready}
   end
@@ -159,8 +175,6 @@ defmodule UtpPeer do
     st
   end
 
-  defp handle(st, %{type: :syn}, _payload), do: st
-
   defp drain(st) do
     next = st.ack_nr + 1 &&& 0xFFFF
 
@@ -173,6 +187,10 @@ defmodule UtpPeer do
         drain(%{st | app: st.app <> payload, ack_nr: next, pending: rest})
     end
   end
+
+  # With auto_ack off the peer answers DATA with DATA only, so any
+  # acknowledgment we get arrives piggybacked. SYN-ACKs still send.
+  defp ack(%{auto_ack: false} = st), do: st
 
   defp ack(st) do
     sack = if map_size(st.pending) > 0, do: MapSet.new(Map.keys(st.pending)), else: nil
@@ -195,9 +213,11 @@ defmodule UtpPeer do
     peer_send(%{st | send_queue: queue, seq_next: st.seq_next + 1 &&& 0xFFFF})
   end
 
+  # FINs display without consuming (libtorrent never increments for
+  # FIN), so duplicates carry the same sequence number.
   defp peer_fin(st) do
     send_raw(st, :fin, <<>>, st.seq_next)
-    %{st | seq_next: st.seq_next + 1 &&& 0xFFFF}
+    st
   end
 
   defp note_ts(st, header) do

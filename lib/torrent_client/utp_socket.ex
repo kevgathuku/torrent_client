@@ -72,10 +72,12 @@ defmodule TorrentClient.UtpSocket do
   @impl true
   @spec recv(t(), non_neg_integer(), timeout()) :: {:ok, binary()} | {:error, term()}
   def recv(pid, count, timeout) do
-    GenServer.call(pid, {:recv, count}, timeout)
+    # Unbounded call: the server owns the timeout and replies exactly
+    # once, so an abandoned waiter can never eat later stream bytes.
+    GenServer.call(pid, {:recv, count, timeout}, :infinity)
   catch
-    :exit, {:timeout, _} -> {:error, :timeout}
     :exit, {:noproc, _} -> {:error, :closed}
+    :exit, {:normal, _} -> {:error, :closed}
   end
 
   @impl true
@@ -127,7 +129,7 @@ defmodule TorrentClient.UtpSocket do
         max_window: @payload_max,
         adv_wnd: @recv_cap,
         base_delay_us: nil,
-        base_samples: []
+        base_at_ms: 0
       }
 
       # SYN consumes sequence 1 and is the one packet sent on the base
@@ -178,7 +180,7 @@ defmodule TorrentClient.UtpSocket do
     end
   end
 
-  def handle_call({:recv, count}, from, state) do
+  def handle_call({:recv, count, timeout}, from, state) do
     cond do
       byte_size(state.recv_app) >= count ->
         <<data::binary-size(^count), rest::binary>> = state.recv_app
@@ -188,7 +190,9 @@ defmodule TorrentClient.UtpSocket do
         {:reply, {:error, :closed}, state}
 
       true ->
-        {:noreply, %{state | waiters: state.waiters ++ [{from, count}]}}
+        ref = make_ref()
+        if timeout != :infinity, do: Process.send_after(self(), {:recv_timeout, ref}, timeout)
+        {:noreply, %{state | waiters: state.waiters ++ [{from, count, ref}]}}
     end
   end
 
@@ -229,6 +233,19 @@ defmodule TorrentClient.UtpSocket do
   # timeouts and resends already cover the loss. Never crash on them.
   def handle_info({:udp_error, _udp, _reason}, state), do: {:noreply, state}
   def handle_info({:udp_closed, _udp}, state), do: {:noreply, state}
+
+  # Server-side receive deadline: the waiter is dropped before it can
+  # eat later stream bytes, so every waiter gets exactly one reply.
+  def handle_info({:recv_timeout, ref}, state) do
+    case List.keytake(state.waiters, ref, 2) do
+      {{from, _count, ^ref}, rest} ->
+        GenServer.reply(from, {:error, :timeout})
+        {:noreply, %{state | waiters: rest}}
+
+      nil ->
+        {:noreply, state}
+    end
+  end
 
   def handle_info(:tick, state) do
     schedule_tick()
@@ -284,19 +301,27 @@ defmodule TorrentClient.UtpSocket do
     ack_out(state, header.ack, header)
   end
 
+  # Every packet carries a cumulative ack; peers with data to send
+  # piggyback ours on DATA/FIN instead of a bare STATE. Those retire
+  # packets but never count as duplicate ACKs (libtorrent: a stream of
+  # DATA says nothing about our losses).
+
   defp handle_typed(state, %{type: :data, seq: seq} = header, payload) do
     state = %{state | adv_wnd: header.wnd}
+    state = ack_out(state, header.ack, header, count_dup: false)
     receive_data(state, seq, payload)
   end
 
   defp handle_typed(state, %{type: :fin, seq: seq} = header, _payload) do
     state = %{state | adv_wnd: header.wnd}
+    state = ack_out(state, header.ack, header, count_dup: false)
     receive_fin(state, seq)
   end
 
   # -- acknowledgement ---------------------------------------------------
 
-  defp ack_out(state, ack_nr, header) do
+  defp ack_out(state, ack_nr, header, opts \\ []) do
+    count_dup = Keyword.get(opts, :count_dup, true)
     {newly, rest} = take_acked(state.send_buf, state.last_ack_nr, ack_nr)
     oldest = oldest_seq(state.send_buf)
     state = %{state | send_buf: rest}
@@ -318,9 +343,15 @@ defmodule TorrentClient.UtpSocket do
       %{state | last_ack_nr: ack_nr, dupacks: 0, fast_resend_seq: ack_nr + 1 &&& 0xFFFF}
       |> pump()
     else
-      state = %{state | dupacks: state.dupacks + 1}
-      if state.dupacks >= 3, do: fast_resend(state, ack_nr + 1 &&& 0xFFFF), else: state
+      count_dup_ack(state, ack_nr, count_dup)
     end
+  end
+
+  defp count_dup_ack(state, _ack_nr, false), do: state
+
+  defp count_dup_ack(state, ack_nr, true) do
+    state = %{state | dupacks: state.dupacks + 1}
+    if state.dupacks >= 3, do: fast_resend(state, ack_nr + 1 &&& 0xFFFF), else: state
   end
 
   defp oldest_seq([]), do: nil
@@ -409,7 +440,11 @@ defmodule TorrentClient.UtpSocket do
       Map.has_key?(state.recv_buf, seq) or seq == state.ack_nr or Utp.seq_lt(seq, state.ack_nr) ->
         send_ack(state)
 
-      map_size(state.recv_buf) < 512 ->
+      # Bounded twice: entry count plus a 512-packet forward window, so
+      # a far-ahead seq can neither blow the SACK mask past its 255-byte
+      # length field nor pin memory. Out-of-window bytes are dropped and
+      # re-ACKed; the sender's timeout resends anything real.
+      map_size(state.recv_buf) < 512 and Utp.in_window?(seq, state.ack_nr, 512) ->
         state = %{state | recv_buf: Map.put(state.recv_buf, seq, payload)}
         send_ack(state)
 
@@ -460,7 +495,9 @@ defmodule TorrentClient.UtpSocket do
   end
 
   defp fulfill_waiters(state) do
-    Enum.reduce(state.waiters, %{state | waiters: []}, fn {from, count}, acc ->
+    # A spent timer firing later finds no waiter and is ignored, so
+    # every waiter still gets exactly one reply from exactly one path.
+    Enum.reduce(state.waiters, %{state | waiters: []}, fn {from, count, ref}, acc ->
       cond do
         byte_size(acc.recv_app) >= count ->
           <<data::binary-size(^count), rest::binary>> = acc.recv_app
@@ -472,7 +509,7 @@ defmodule TorrentClient.UtpSocket do
           acc
 
         true ->
-          %{acc | waiters: acc.waiters ++ [{from, count}]}
+          %{acc | waiters: acc.waiters ++ [{from, count, ref}]}
       end
     end)
   end
@@ -607,41 +644,29 @@ defmodule TorrentClient.UtpSocket do
     %{state | timeout_ms: min(state.timeout_ms * 2, @max_timeout_ms)}
   end
 
+  # O(1) base delay: running minimum with a 120 s window, no history
+  # list. A zero ts_diff means the peer has no sample yet — it is not
+  # a delay measurement and must not poison the baseline.
   defp note_sample(state, header) do
     now_us = now_us()
     reply_micro = now_us - header.ts &&& 0xFFFFFFFF
+    state = %{state | reply_ts: header.ts, reply_micro: reply_micro}
 
-    samples = prune_samples([{header.ts_diff, now_ms()} | state.base_samples])
-
-    base =
-      case samples do
-        [] -> nil
-        _ -> samples |> Enum.map(&elem(&1, 0)) |> Enum.min()
-      end
-
-    state = %{
+    if header.ts_diff == 0 do
       state
-      | reply_ts: header.ts,
-        reply_micro: reply_micro,
-        base_samples: samples,
-        base_delay_us: base
-    }
-
-    if header.ts_diff != 0 and base != nil do
+    else
+      {base, at} = base_for(state, header.ts_diff, now_ms())
       our_delay = header.ts_diff - base &&& 0xFFFFFFFF
-      # Sub-microsecond wraps read as huge delays; clamp to ±1 hour.
+      # Wraps read as huge delays; clamp (a real queue never exceeds it).
       our_delay = if our_delay > 0x80000000, do: 0, else: our_delay
       max_window = Utp.ledbat_update(state.max_window, in_flight(state), our_delay, @payload_max)
-      %{state | max_window: max_window}
-    else
-      state
+      %{state | base_delay_us: base, base_at_ms: at, max_window: max_window}
     end
   end
 
-  defp prune_samples(samples) do
-    cutoff = now_ms() - 120_000
-    Enum.filter(samples, fn {_delay, at} -> at >= cutoff end)
-  end
+  defp base_for(%{base_delay_us: nil}, sample, now), do: {sample, now}
+  defp base_for(%{base_at_ms: at}, sample, now) when now - at > 120_000, do: {sample, now}
+  defp base_for(state, sample, _now), do: {min(state.base_delay_us, sample), state.base_at_ms}
 
   defp die_closed(state, _reason) do
     state = %{state | status: :closed}

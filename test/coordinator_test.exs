@@ -458,6 +458,25 @@ defmodule CoordinatorTest do
     Process.flag(:trap_exit, false)
   end
 
+  test "unknown transport fails fast with its pair unmapped", ctx do
+    Process.flag(:trap_exit, true)
+
+    assert {:error, {:shutdown, {:failed_to_start_child, _, {:invalid_transport, :bogus}}}} =
+             TorrentSupervisor.start_link(coord_opts(ctx, peers: [], transport: :bogus))
+
+    Process.flag(:trap_exit, false)
+  end
+
+  test "utp transport resolves the paired network and sock seams", ctx do
+    start_sup_unlinked(
+      coord_opts(ctx, peers: [%Peer{ip_tuple: {127, 0, 0, 1}, port: 1}], transport: :utp)
+    )
+
+    pid = coord_pid(ctx.info_hash)
+    assert :sys.get_state(pid).network == TorrentClient.UtpNetwork
+    assert :sys.get_state(pid).sock == TorrentClient.UtpSocket
+  end
+
   test "unknown exits and messages are ignored", ctx do
     {listen, port} = listen!()
 

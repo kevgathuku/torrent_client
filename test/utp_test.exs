@@ -75,6 +75,9 @@ defmodule TorrentClient.UtpTest do
     # Extension 9 (unknown), length 3, then terminator-less end.
     raw = Utp.encode(header, raw_ext: [{9, <<1, 2, 3>>}])
     assert {:ok, %{sack: []}, <<>>} = Utp.decode(raw)
+    # Chained unknowns skip in order.
+    raw2 = Utp.encode(header, raw_ext: [{9, <<1>>}, {7, <<2, 3>>}])
+    assert {:ok, %{sack: []}, <<>>} = Utp.decode(raw2)
   end
 
   test "sequence arithmetic wraps the 16-bit ring" do

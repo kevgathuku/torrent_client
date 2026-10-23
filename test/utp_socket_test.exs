@@ -56,6 +56,12 @@ defmodule UtpSocketTest do
     {:ok, port} = :inet.port(udp)
     :gen_udp.close(udp)
     assert {:error, :timeout} = UtpSocket.connect({127, 0, 0, 1}, port, connect_timeout: 300)
+
+    assert {:error, :timeout} =
+             TorrentClient.UtpNetwork.connect(%Peer{
+               ip_tuple: {127, 0, 0, 1},
+               port: port
+             })
   end
 
   test "exchanges ordered bytes both ways" do
@@ -77,6 +83,84 @@ defmodule UtpSocketTest do
     send(peer, {:send_bytes, :binary.copy(<<9>>, 100)})
     assert {:ok, result} = UtpSocket.recv(pid, 100, 3_000)
     assert result == :binary.copy(<<9>>, 100)
+    :ok = UtpSocket.close(pid)
+    send(peer, {:close})
+  end
+
+  test "a timed-out recv consumes nothing" do
+    parent = self()
+    {peer, port} = UtpPeer.start(parent)
+    {:ok, pid} = UtpSocket.connect({127, 0, 0, 1}, port, [])
+    assert_receive {:peer_syn, _conn, 1}, 2_000
+
+    # Nothing arrives: the recv times out and must leave no waiter
+    # behind to eat later bytes (SocketBehaviour: timeouts consume
+    # nothing, like :gen_tcp.recv/3).
+    assert {:error, :timeout} = UtpSocket.recv(pid, 10, 200)
+    assert :sys.get_state(pid).waiters == []
+    assert {:error, :timeout} = UtpSocket.recv(pid, 10, 0)
+    assert :sys.get_state(pid).waiters == []
+
+    send(peer, {:send_bytes, "hello-dire"})
+    assert {:ok, "hello-dire"} = UtpSocket.recv(pid, 10, 3_000)
+    :ok = UtpSocket.close(pid)
+    send(peer, {:close})
+  end
+
+  test "retires acks piggybacked on DATA" do
+    parent = self()
+    {peer, port} = UtpPeer.start(parent, %{auto_ack: false})
+    {:ok, pid} = UtpSocket.connect({127, 0, 0, 1}, port, [])
+    assert_receive {:peer_syn, _conn, 1}, 2_000
+
+    :ok = UtpSocket.send(pid, "ping")
+    assert_receive {:peer_data, 2, "ping"}, 2_000
+    # The only acknowledgment of seq 2 rides on the reply DATA.
+    send(peer, {:send_bytes, "pong"})
+    assert {:ok, "pong"} = UtpSocket.recv(pid, 4, 3_000)
+    assert_eventually(fn -> :sys.get_state(pid).send_buf == [] end)
+    :ok = UtpSocket.close(pid)
+    send(peer, {:close})
+  end
+
+  test "buffers gaps, SACKs them, and completes on FIN" do
+    parent = self()
+    {peer, port} = UtpPeer.start(parent)
+    {:ok, pid} = UtpSocket.connect({127, 0, 0, 1}, port, [])
+    assert_receive {:peer_syn, _conn, 1}, 2_000
+
+    # In-order byte, then a hole, a future byte, an early FIN, and a
+    # duplicate of the first byte — all out of the normal send path.
+    send(peer, {:send_bytes, "a"})
+    assert {:ok, "a"} = UtpSocket.recv(pid, 1, 3_000)
+    ack = :sys.get_state(pid).ack_nr
+    send(peer, {:skip_seq})
+    send(peer, {:send_bytes, "b"})
+    assert_receive {:peer_ack, ^ack, [_ | _]}, 3_000
+    send(peer, {:send_fin})
+    send(peer, {:send_fin})
+    send(peer, {:send_at_seq, ack, "a"})
+    send(peer, {:send_at_seq, ack + 1 &&& 0xFFFF, "H"})
+    assert {:ok, "H"} = UtpSocket.recv(pid, 1, 3_000)
+    assert {:ok, "b"} = UtpSocket.recv(pid, 1, 3_000)
+    assert {:error, :closed} = UtpSocket.recv(pid, 1, 3_000)
+    :ok = UtpSocket.close(pid)
+    send(peer, {:close})
+  end
+
+  test "drops far-ahead packets without buffering" do
+    parent = self()
+    {peer, port} = UtpPeer.start(parent)
+    {:ok, pid} = UtpSocket.connect({127, 0, 0, 1}, port, [])
+    assert_receive {:peer_syn, _conn, 1}, 2_000
+    ack = :sys.get_state(pid).ack_nr
+    # A hostile 1000-packet jump: never buffered, never SACKed raw.
+    send(peer, {:send_at_seq, ack + 1_000 &&& 0xFFFF, "x"})
+    Process.sleep(200)
+    assert :sys.get_state(pid).recv_buf == %{}
+    # ...and the stream still works afterwards.
+    send(peer, {:send_bytes, "ok"})
+    assert {:ok, "ok"} = UtpSocket.recv(pid, 2, 3_000)
     :ok = UtpSocket.close(pid)
     send(peer, {:close})
   end
@@ -150,9 +234,17 @@ defmodule UtpSocketTest do
     assert_receive {:peer_syn, _conn, 1}, 2_000
     assert :sys.get_state(pid).max_window == 1_400
 
+    # Establish a real baseline first: the first nonzero sample sets
+    # the base, so a lone forged sample would baseline itself.
+    send(peer, {:send_bytes, "w"})
+    assert {:ok, "w"} = UtpSocket.recv(pid, 1, 3_000)
     # Keep 1_400 bytes in flight (peer never ACKs), then report a
-    # 500 ms buffering delay: the window must hit the floor.
+    # 500 ms buffering delay: the window must hit the floor. The forge
+    # goes out only after our bytes landed — every inbound packet
+    # re-measures the peer's clock, which would overwrite it.
+    send(peer, {:ignore_acks, 99})
     :ok = UtpSocket.send(pid, :binary.copy(<<1>>, 1_400))
+    assert_receive {:peer_data, 2, _}, 3_000
     send(peer, {:ts_diff, 500_000})
     send(peer, {:send_bytes, "x"})
     assert {:ok, "x"} = UtpSocket.recv(pid, 1, 3_000)

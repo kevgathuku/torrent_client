@@ -7,7 +7,7 @@ defmodule UtpPeerTest do
   """
   use ExUnit.Case, async: true
 
-  alias TorrentClient.{Disk, PeerWorker, UtpNetwork, UtpSocket}
+  alias TorrentClient.{Disk, PeerWorker, UtpSocket}
 
   alias PeerMessage.{Bitfield, Interested, Piece, Request, Unchoke}
 
@@ -105,8 +105,7 @@ defmodule UtpPeerTest do
         piece_index: 0,
         piece_hash: ctx.hash,
         base_dir: ctx.base,
-        network: UtpNetwork,
-        sock: UtpSocket,
+        transport: :utp,
         recv_timeout: 2_000
       )
 
@@ -123,6 +122,44 @@ defmodule UtpPeerTest do
     refute Process.alive?(pid)
     assert_receive {:peer_fin, _seq}, 2_000
     send(peer, {:close})
+  end
+
+  test "rejects an unknown transport at start" do
+    Process.flag(:trap_exit, true)
+
+    assert {:error, :invalid_transport} =
+             PeerWorker.start_link(
+               peer: %Peer{ip_tuple: {127, 0, 0, 1}, port: 1},
+               info_hash: :crypto.strong_rand_bytes(20),
+               peer_id: @peer_id,
+               info: %{piece_length: 1, name: "x", length: 1},
+               piece_index: 0,
+               piece_hash: :crypto.hash(:sha, "x"),
+               base_dir: System.tmp_dir!(),
+               transport: :bogus
+             )
+  end
+
+  defmodule RaisingSock do
+    @moduledoc false
+    @behaviour TorrentClient.SocketBehaviour
+    def send(_, _), do: :ok
+    def recv(_, _, _), do: {:error, :closed}
+    def close(_socket), do: raise("boom")
+  end
+
+  defmodule ExitingSock do
+    @moduledoc false
+    @behaviour TorrentClient.SocketBehaviour
+    def send(_, _), do: :ok
+    def recv(_, _, _), do: {:error, :closed}
+    def close(_socket), do: exit(:boom)
+  end
+
+  test "terminate survives a raising or exiting sock close" do
+    pid = spawn(fn -> :ok end)
+    assert :ok = PeerWorker.terminate(:shutdown, %{socket: pid, sock: RaisingSock})
+    assert :ok = PeerWorker.terminate(:shutdown, %{socket: pid, sock: ExitingSock})
   end
 
   test "terminate on a dead uTP socket is a no-op" do
