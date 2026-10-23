@@ -3,6 +3,9 @@ defmodule Tracker do
   Tracker HTTP edge and response parsing. Announce tiers come from
   `Torrent.announce_tiers/1`; peer lists parse into `Peer` structs.
   """
+
+  require Logger
+
   @doc """
   Returns the Tracker URL with correctly encoded params
   """
@@ -52,7 +55,7 @@ defmodule Tracker do
         end
 
       {:ok, _} ->
-        {:error, "Unknown response from tracker"}
+        {:error, :unknown_tracker_response}
 
       {:error, _} ->
         {:error, :malformed_response}
@@ -66,7 +69,7 @@ defmodule Tracker do
         {:ok, Peer.filter_usable(v4 ++ v6)}
       end
     else
-      {:error, "Unknown response from tracker"}
+      {:error, :unknown_tracker_response}
     end
   end
 
@@ -79,12 +82,22 @@ defmodule Tracker do
 
   defp parse_family(decoded, key, family) do
     case Map.get(decoded, key) do
-      nil -> {:ok, []}
-      peers when is_binary(peers) -> Peer.parse_compact(peers, family)
-      peers when is_list(peers) -> parse_dict_peers(peers)
-      _ -> {:error, "Invalid #{key} in tracker response"}
+      nil ->
+        {:ok, []}
+
+      peers when is_binary(peers) ->
+        peers |> Peer.parse_compact(family) |> tap(&log_parsed/1)
+
+      peers when is_list(peers) ->
+        parse_dict_peers(peers)
+
+      _ ->
+        {:error, {:invalid_peers, key}}
     end
   end
+
+  defp log_parsed({:ok, peers}), do: Logger.debug("parsed peers: #{inspect(peers)}")
+  defp log_parsed(_), do: :ok
 
   defp parse_dict_peers(entries) do
     Enum.reduce_while(entries, {:ok, []}, fn

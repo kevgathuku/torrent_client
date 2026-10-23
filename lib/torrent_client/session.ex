@@ -46,7 +46,7 @@ defmodule TorrentClient.Session do
   `:udp`, `:supervisor` (default `TorrentClient.SessionSupervisor`),
   `:announce_timeout` ms (default 10 000), plus coordinator pass-throughs
   (`:max_peers`, `:max_inflight`, `:recv_timeout`, `:piece_timeout`,
-  `:watchdog_timeout`, `:encryption`).
+  `:watchdog_timeout`, `:encryption`, `:transport`).
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -123,6 +123,7 @@ defmodule TorrentClient.Session do
        port: port,
        peer_id: Utils.generate_peer_id(),
        torrents: %{},
+       pending: %{},
        disk: Keyword.get(opts, :disk, Disk),
        udp: Keyword.get(opts, :udp, TorrentClient.Udp),
        supervisor: Keyword.get(opts, :supervisor, TorrentClient.SessionSupervisor),
@@ -134,7 +135,9 @@ defmodule TorrentClient.Session do
            :recv_timeout,
            :piece_timeout,
            :watchdog_timeout,
-           :webseed_http
+           :webseed_http,
+           :encryption,
+           :transport
          ])
      }}
   end
@@ -242,10 +245,21 @@ defmodule TorrentClient.Session do
   # but :downloading just drops the dead pid; a downloading torrent
   # restarts from resume state until the budget runs out, then goes
   # terminal exhausted instead of spinning (or orphaning) forever.
+  def handle_info({:announced, ref, peers}, state) do
+    finish_announce(state, ref, peers)
+  end
+
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    case find_by_sup_ref(state, ref) do
-      {:ok, raw, entry} -> handle_subtree_down(state, raw, entry, reason)
-      :error -> {:noreply, state}
+    case pending_mon_ref(state, ref) do
+      # Announce task died: degrade to an empty announce, never a stuck entry.
+      {:ok, aref} ->
+        finish_announce(state, aref, [])
+
+      :error ->
+        case find_by_sup_ref(state, ref) do
+          {:ok, raw, entry} -> handle_subtree_down(state, raw, entry, reason)
+          :error -> {:noreply, state}
+        end
     end
   end
 
@@ -366,8 +380,17 @@ defmodule TorrentClient.Session do
 
   defp configured_port(opts) do
     case Keyword.get(opts, :config_path) do
-      nil -> nil
-      path -> with {:ok, %{port: port}} <- Config.load(path), do: port
+      nil ->
+        nil
+
+      path ->
+        # Fail fast: a given config file that cannot be read or parsed
+        # must never boot the session deaf on a random free port.
+        case Config.load(path) do
+          {:ok, %{port: nil}} -> nil
+          {:ok, %{port: port}} -> port
+          {:error, reason} -> raise "invalid config #{path}: #{inspect(reason)}"
+        end
     end
   end
 
@@ -390,6 +413,7 @@ defmodule TorrentClient.Session do
          hex = Torrent.info_hash(raw_info),
          raw = Base.decode16!(hex),
          :ok <- check_new(state, raw),
+         :ok <- check_sup(state),
          hashes when is_list(hashes) <- Torrent.get_piece_hashes(bento),
          base_dir = Keyword.get(opts, :base_dir, Path.basename(path, ".torrent")),
          :ok <- state.disk.init_layout(base_dir, bento.info) do
@@ -423,10 +447,90 @@ defmodule TorrentClient.Session do
       if length(verified) == length(hashes) do
         {:ok, hex, put_in(state.torrents[raw], %{entry | status: :complete})}
       else
-        peers = static_peers || announce_peers(state, entry)
-        start_subtree(state, entry, %{hashes: hashes, peers: peers, verified: verified})
+        start_peers(state, entry, static_peers, %{hashes: hashes, verified: verified})
       end
     end
+  end
+
+  defp start_peers(state, entry, nil, torrent), do: start_announce(state, entry, torrent)
+
+  defp start_peers(state, entry, peers, torrent),
+    do: start_subtree(state, entry, Map.put(torrent, :peers, peers))
+
+  # The tracker fan-out is the only network wait in add: it runs in a
+  # monitored task so the session keeps serving other calls while
+  # trackers answer. The reply goes out at once; the subtree starts when
+  # the announce lands (`:announced`). A dead task reports no peers, so a
+  # crash here degrades to the exhausted path, never a stuck entry.
+  defp start_announce(state, entry, torrent) do
+    ref = make_ref()
+    server = self()
+    edge = Map.take(state, [:peer_id, :port, :udp])
+
+    {_pid, mon} =
+      spawn_monitor(fn -> send(server, {:announced, ref, announce_peers(edge, entry)}) end)
+
+    pending = Map.put(state.pending, ref, %{raw: entry.raw, torrent: torrent, mon: mon})
+    entry = Map.put(entry, :announce_ref, ref)
+
+    {:ok, entry.id,
+     %{state | pending: pending, torrents: Map.put(state.torrents, entry.raw, entry)}}
+  end
+
+  defp finish_announce(state, ref, peers) do
+    case Map.pop(state.pending, ref) do
+      {nil, _} ->
+        {:noreply, state}
+
+      {%{raw: raw, torrent: torrent, mon: mon}, pending} ->
+        Process.demonitor(mon, [:flush])
+
+        finish_landed(
+          %{state | pending: pending},
+          raw,
+          ref,
+          Map.put(torrent, :peers, peers)
+        )
+    end
+  end
+
+  defp finish_landed(state, raw, ref, torrent) do
+    case Map.fetch(state.torrents, raw) do
+      {:ok, %{announce_ref: ^ref, status: :downloading} = entry} ->
+        start_landed(state, raw, Map.delete(entry, :announce_ref), torrent)
+
+      {:ok, entry} ->
+        # Paused, forgotten, or re-added since: leave the newer entry alone.
+        {:noreply,
+         %{
+           state
+           | torrents: Map.update(state.torrents, raw, entry, &Map.delete(&1, :announce_ref))
+         }}
+
+      :error ->
+        {:noreply, state}
+    end
+  end
+
+  defp start_landed(state, raw, entry, torrent) do
+    state = %{state | torrents: Map.put(state.torrents, raw, entry)}
+
+    case start_subtree(state, entry, torrent) do
+      {:ok, _id, state} ->
+        {:noreply, state}
+
+      {:error, reason} ->
+        Logger.error("announced subtree start failed #{entry.id}: #{inspect(reason)}")
+
+        {:noreply,
+         %{state | torrents: Map.put(state.torrents, raw, %{entry | status: :exhausted})}}
+    end
+  end
+
+  defp pending_mon_ref(state, mon) do
+    Enum.find_value(state.pending, :error, fn {ref, %{mon: m}} ->
+      if m == mon, do: {:ok, ref}
+    end)
   end
 
   # No peers anywhere (static or announced) and no webseed URLs is not
@@ -547,6 +651,14 @@ defmodule TorrentClient.Session do
 
   defp check_new(state, raw) do
     if Map.has_key?(state.torrents, raw), do: {:error, :already_added}, else: :ok
+  end
+
+  # Fail fast when the subtree supervisor is gone: no torrent can start,
+  # and an announce-first add would only learn that after the timeout.
+  # The supervisor may be a pid (tests) or a registered name (the app).
+  defp check_sup(%{supervisor: sup}) do
+    pid = if is_pid(sup), do: sup, else: Process.whereis(sup)
+    if is_pid(pid) and Process.alive?(pid), do: :ok, else: {:error, :no_supervisor}
   end
 
   # Atom keys from bento structs, string keys from raw info maps (tests,

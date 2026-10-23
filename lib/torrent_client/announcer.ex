@@ -13,6 +13,8 @@ defmodule TorrentClient.Announcer do
 
   use GenServer
 
+  require Logger
+
   alias TorrentClient.{Backoff, TierState, UdpTracker}
   alias TorrentClient.Requests.Client, as: RequestsClient
 
@@ -114,6 +116,7 @@ defmodule TorrentClient.Announcer do
          {:ok, %{peers: raw_peers, interval: interval}} <-
            UdpTracker.decode_announce(announce_resp, axid, ip_version(family)),
          {:ok, peers} <- Peer.parse_compact(raw_peers, ip_version(family)) do
+      Logger.debug("parsed peers: #{inspect(peers)}")
       {:ok, %{peers: Peer.filter_usable(peers), interval: interval}}
     end
   end

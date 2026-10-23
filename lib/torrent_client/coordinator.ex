@@ -67,7 +67,9 @@ defmodule TorrentClient.Coordinator do
   (default #{@default_max_peers}), `:max_inflight`, `:watchdog_timeout`
   ms, `:max_stalls`, `:max_peer_failures`, `:recv_timeout`/
   `:piece_timeout` ms passed to workers, `:encryption` (`:plaintext`,
-  `:prefer_mse`, `:require_mse`) passed to workers, effect seams
+  `:prefer_mse`, `:require_mse`) passed to workers, `:transport`
+  (`:tcp` default, `:utp`) selecting the paired `:network`/`:sock`
+  impls (explicit `:network`/`:sock` still win), effect seams
   (`:network`, `:disk`, `:sock`, `:clock`), `:name`.
 
   Every verified piece is published to `<base_dir>/.resume` (staged
@@ -97,11 +99,30 @@ defmodule TorrentClient.Coordinator do
   # fail loudly on their own (timeouts, give-ups), so only this one
   # needs a guard.
   defp validate_opts(opts) do
+    with :ok <- validate_max_peers(opts) do
+      validate_transport(opts)
+    end
+  end
+
+  defp validate_max_peers(opts) do
     case Keyword.get(opts, :max_peers, @default_max_peers) do
       n when is_integer(n) and n >= 1 -> :ok
       bad -> {:error, {:invalid_max_peers, bad}}
     end
   end
+
+  defp validate_transport(opts) do
+    case Keyword.get(opts, :transport, :tcp) do
+      t when t in [:tcp, :utp] -> :ok
+      bad -> {:error, {:invalid_transport, bad}}
+    end
+  end
+
+  defp transport_network(:tcp), do: TorrentClient.Network
+  defp transport_network(:utp), do: TorrentClient.UtpNetwork
+
+  defp transport_sock(:tcp), do: TorrentClient.GenTcpSocket
+  defp transport_sock(:utp), do: TorrentClient.UtpSocket
 
   defp init_state(opts) do
     piece_hashes = Keyword.fetch!(opts, :piece_hashes)
@@ -110,6 +131,7 @@ defmodule TorrentClient.Coordinator do
     info_hash = Keyword.fetch!(opts, :info_hash)
     base_dir = Keyword.fetch!(opts, :base_dir)
     disk = Keyword.get(opts, :disk, TorrentClient.Disk)
+    transport = Keyword.get(opts, :transport, :tcp)
 
     # A crash-restarted coordinator is born with the start opts of its
     # first incarnation, whose `verified` predates everything it
@@ -142,9 +164,9 @@ defmodule TorrentClient.Coordinator do
       piece_timeout: Keyword.get(opts, :piece_timeout, 30_000),
       report_to: Keyword.get(opts, :report_to, nil),
       clock: Keyword.get(opts, :clock, TorrentClient.Clock),
-      network: Keyword.get(opts, :network, TorrentClient.Network),
+      network: Keyword.get(opts, :network, transport_network(transport)),
       disk: disk,
-      sock: Keyword.get(opts, :sock, TorrentClient.GenTcpSocket),
+      sock: Keyword.get(opts, :sock, transport_sock(transport)),
       encryption: Keyword.get(opts, :encryption, :plaintext),
       sup: Keyword.fetch!(opts, :peer_sup),
       refill_peers: Keyword.get(opts, :refill_peers, nil),
