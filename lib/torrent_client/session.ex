@@ -46,7 +46,7 @@ defmodule TorrentClient.Session do
   `:udp`, `:supervisor` (default `TorrentClient.SessionSupervisor`),
   `:announce_timeout` ms (default 10 000), plus coordinator pass-throughs
   (`:max_peers`, `:max_inflight`, `:recv_timeout`, `:piece_timeout`,
-  `:watchdog_timeout`, `:encryption`).
+  `:watchdog_timeout`, `:encryption`, `:transport`).
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -134,7 +134,9 @@ defmodule TorrentClient.Session do
            :recv_timeout,
            :piece_timeout,
            :watchdog_timeout,
-           :webseed_http
+           :webseed_http,
+           :encryption,
+           :transport
          ])
      }}
   end

@@ -198,10 +198,19 @@ defmodule TorrentClient.PeerWorker do
   end
 
   # The socket dies with the worker, but an explicit close keeps restarts
-  # from stacking duplicate connections on the crash path.
+  # from stacking duplicate connections on the crash path. uTP sockets
+  # are pids, closed through the same seam.
   @impl true
   def terminate(_reason, %{socket: socket, sock: sock}) when is_port(socket),
     do: sock.close(socket)
+
+  def terminate(_reason, %{socket: socket, sock: sock}) when is_pid(socket) do
+    sock.close(socket)
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
 
   def terminate(_reason, _state), do: :ok
 
