@@ -37,7 +37,7 @@ Run before handing off; leave the tree no worse than you found it
 (pre-existing compiler/format/credo warnings exist — fix any you introduce).
 
 ```bash
-mix test                 # full suite
+mix test > /tmp/mix_test.log 2>&1  # run the full suite once, then grep the file — never re-run it just to list failures
 mix test --cover         # suite with coverage report (HTML in cover/)
 mix format               # canonical style; `mix format --check-formatted` to verify
 mix credo --strict       # lint (no .credo.exs; strict default checks apply)

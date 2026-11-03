@@ -7,7 +7,7 @@ defmodule Torrent do
   @hash_length 20
 
   def get_piece_hashes(%{info: %{pieces: pieces}}) when byte_size(pieces) < 20,
-    do: {:error, "Received malformed pieces. Length: #{byte_size(pieces)}"}
+    do: {:error, {:malformed_pieces, byte_size(pieces)}}
 
   def get_piece_hashes(%{info: %{pieces: pieces}}) do
     pieces_length = byte_size(pieces)

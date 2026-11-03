@@ -11,21 +11,10 @@ defmodule TorrentClient.Network do
 
   @doc """
   Open a TCP connection to the peer. Returns the connected socket.
+  `:gen_tcp` reasons pass through untouched so callers can match them.
   """
   @impl true
   def connect(peer) do
-    case :gen_tcp.connect(peer.ip_tuple, peer.port, [:binary, active: false], @timeout) do
-      {:ok, socket} ->
-        {:ok, socket}
-
-      {:error, :econnrefused} ->
-        {:error, "Connection refused"}
-
-      {:error, :etimedout} ->
-        {:error, "Connection timed out"}
-
-      {:error, _} ->
-        {:error, "Failed to connect to peer"}
-    end
+    :gen_tcp.connect(peer.ip_tuple, peer.port, [:binary, active: false], @timeout)
   end
 end
