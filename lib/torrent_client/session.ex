@@ -30,7 +30,7 @@ defmodule TorrentClient.Session do
 
   require Logger
 
-  alias TorrentClient.{Announcer, Config, Disk, TorrentSupervisor}
+  alias TorrentClient.{Announcer, Config, Disk, SessionLookup, TorrentSupervisor}
 
   # Subtree deaths tolerated before a downloading torrent goes terminal.
   # One death already implies a coordinator crash loop (bounded inside
@@ -156,7 +156,7 @@ defmodule TorrentClient.Session do
   end
 
   def handle_call({:pause, id_or_path}, _from, state) do
-    case find(state, id_or_path) do
+    case SessionLookup.find(state.torrents, id_or_path) do
       {:ok, raw, entry} ->
         state = pause_entry(state, raw, entry)
         Logger.info("paused #{entry.id}")
@@ -168,7 +168,7 @@ defmodule TorrentClient.Session do
   end
 
   def handle_call({:resume, id_or_path}, _from, state) do
-    case find(state, id_or_path) do
+    case SessionLookup.find(state.torrents, id_or_path) do
       {:ok, raw, entry} ->
         case resume_entry(state, raw, entry) do
           {:ok, id, state} ->
@@ -186,7 +186,7 @@ defmodule TorrentClient.Session do
   end
 
   def handle_call({:forget, id_or_path}, _from, state) do
-    case find(state, id_or_path) do
+    case SessionLookup.find(state.torrents, id_or_path) do
       {:ok, raw, entry} ->
         stop_sup(state, entry)
         Logger.info("forgot #{entry.id}")
@@ -211,7 +211,7 @@ defmodule TorrentClient.Session do
   end
 
   def handle_call({:remove, id_or_path, opts}, _from, state) do
-    case find(state, id_or_path) do
+    case SessionLookup.find(state.torrents, id_or_path) do
       {:ok, _raw, entry} ->
         case remove_entry(state, entry, opts) do
           {:ok, files, state} -> {:reply, {:ok, entry.id, files}, state}
@@ -823,38 +823,4 @@ defmodule TorrentClient.Session do
 
     :ok
   end
-
-  # Unique id prefix first (a full id is its own unique prefix), then
-  # torrent path. Registry keys are raw bytes, so callers never hit an
-  # exact-key match — prefix subsumes it.
-  defp find(state, id_or_path) do
-    cond do
-      matching = prefix_match(state, id_or_path) ->
-        {:ok, matching.raw, matching}
-
-      matching = path_match(state, id_or_path) ->
-        {:ok, matching.raw, matching}
-
-      true ->
-        {:error, :not_found}
-    end
-  end
-
-  defp prefix_match(state, prefix) when is_binary(prefix) do
-    case Enum.filter(state.torrents, fn {raw, _} -> String.starts_with?(hex(raw), prefix) end) do
-      [{_raw, entry}] -> entry
-      _ -> nil
-    end
-  end
-
-  defp prefix_match(_state, _prefix), do: nil
-
-  defp path_match(state, path) do
-    case Enum.filter(state.torrents, fn {_raw, entry} -> entry.path == path end) do
-      [{_raw, entry}] -> entry
-      _ -> nil
-    end
-  end
-
-  defp hex(raw), do: Base.encode16(raw)
 end
