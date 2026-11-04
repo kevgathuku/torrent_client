@@ -39,7 +39,7 @@ defmodule TorrentClient.PeerWorker do
     Unchoke
   }
 
-  alias TorrentClient.{MSE, PeerPipeline}
+  alias TorrentClient.{MSE, PeerPipeline, Transport}
 
   @block_size 16_384
   @handshake_size 68
@@ -110,6 +110,8 @@ defmodule TorrentClient.PeerWorker do
   end
 
   defp init_validated(opts, transport) do
+    {default_network, default_sock} = Transport.pair(transport)
+
     state = %{
       peer: Keyword.fetch!(opts, :peer),
       info_hash: Keyword.fetch!(opts, :info_hash),
@@ -119,9 +121,9 @@ defmodule TorrentClient.PeerWorker do
       piece_hash: Keyword.fetch!(opts, :piece_hash),
       base_dir: Keyword.fetch!(opts, :base_dir),
       transport: transport,
-      network: Keyword.get(opts, :network, transport_network(transport)),
+      network: Keyword.get(opts, :network, default_network),
       disk: Keyword.get(opts, :disk, TorrentClient.Disk),
-      sock: Keyword.get(opts, :sock, transport_sock(transport)),
+      sock: Keyword.get(opts, :sock, default_sock),
       clock: Keyword.get(opts, :clock, TorrentClient.Clock),
       encryption: Keyword.get(opts, :encryption, :plaintext),
       crypto: nil,
@@ -154,12 +156,6 @@ defmodule TorrentClient.PeerWorker do
       {:stop, :invalid_encryption}
     end
   end
-
-  defp transport_network(:tcp), do: TorrentClient.Network
-  defp transport_network(:utp), do: TorrentClient.UtpNetwork
-
-  defp transport_sock(:tcp), do: TorrentClient.GenTcpSocket
-  defp transport_sock(:utp), do: TorrentClient.UtpSocket
 
   @impl true
   def handle_continue(:connect, state) do

@@ -38,7 +38,7 @@ defmodule TorrentClient.Coordinator do
 
   require Logger
 
-  alias TorrentClient.{PeerWorker, Telemetry, WebseedWorker}
+  alias TorrentClient.{PeerWorker, Telemetry, Transport, WebseedWorker}
 
   @default_max_peers 4
   # Headroom for the worker's additive-increase / multiplicative-decrease
@@ -118,12 +118,6 @@ defmodule TorrentClient.Coordinator do
     end
   end
 
-  defp transport_network(:tcp), do: TorrentClient.Network
-  defp transport_network(:utp), do: TorrentClient.UtpNetwork
-
-  defp transport_sock(:tcp), do: TorrentClient.GenTcpSocket
-  defp transport_sock(:utp), do: TorrentClient.UtpSocket
-
   defp init_state(opts) do
     piece_hashes = Keyword.fetch!(opts, :piece_hashes)
     now = clock(opts).monotonic_ms()
@@ -145,6 +139,8 @@ defmodule TorrentClient.Coordinator do
           piece_length: piece_length(info)
         })
 
+    {default_network, default_sock} = Transport.pair(transport)
+
     state = %{
       info: info,
       info_hash: info_hash,
@@ -164,9 +160,9 @@ defmodule TorrentClient.Coordinator do
       piece_timeout: Keyword.get(opts, :piece_timeout, 30_000),
       report_to: Keyword.get(opts, :report_to, nil),
       clock: Keyword.get(opts, :clock, TorrentClient.Clock),
-      network: Keyword.get(opts, :network, transport_network(transport)),
+      network: Keyword.get(opts, :network, default_network),
       disk: disk,
-      sock: Keyword.get(opts, :sock, transport_sock(transport)),
+      sock: Keyword.get(opts, :sock, default_sock),
       encryption: Keyword.get(opts, :encryption, :plaintext),
       sup: Keyword.fetch!(opts, :peer_sup),
       refill_peers: Keyword.get(opts, :refill_peers, nil),
