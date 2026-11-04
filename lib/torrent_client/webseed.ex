@@ -9,6 +9,9 @@ defmodule TorrentClient.Webseed do
   `http(s)` bases are dialed; unknown schemes (notably `ftp`, which needs
   a different resume mechanism) are skipped, never failed.
 
+  Slices fetch concurrently (bounded, slowest-slice latency) and still
+  concatenate in torrent order; per-slice base failover is unchanged.
+
   `fetch_piece/4` maps the piece through `Torrent.piece_span/2` and
   `Torrent.split_span/3`, so a piece straddling files becomes one Range
   GET per file slice, concatenated in torrent order. Bases are tried in
@@ -41,13 +44,15 @@ defmodule TorrentClient.Webseed do
   trying every base URL in order. Returns the raw piece bytes; hashing
   and writing stay with the caller, mirroring the peer path.
   """
+  @max_slice_concurrency 4
+
   def fetch_piece(http, urls, info, index)
       when is_atom(http) and is_list(urls) and is_map(info) and is_integer(index) do
     with {:ok, {offset, size}} <- Torrent.piece_span(info, index),
          {:ok, entries} <- Torrent.layout(info) do
       slices = Torrent.split_span(entries, offset, size)
 
-      fetch_slices(http, sane_bases(urls), info, slices, [])
+      fetch_slices(http, sane_bases(urls), info, slices)
     end
   end
 
@@ -55,12 +60,31 @@ defmodule TorrentClient.Webseed do
 
   # -- slices ------------------------------------------------------------------
 
-  defp fetch_slices(_http, _urls, _info, [], acc),
-    do: {:ok, acc |> Enum.reverse() |> Enum.join("")}
-
-  defp fetch_slices(http, urls, info, [{rel, file_offset, length} | rest], acc) do
-    case fetch_slice(http, urls, info, rel, file_offset, length) do
-      {:ok, data} -> fetch_slices(http, urls, info, rest, [data | acc])
+  # Independent slices fly together (bounded); results stream back in
+  # torrent order. No per-task timeout: the HTTP seam bounds every wait
+  # itself, so a slow slice fails the piece instead of wedging the pool.
+  # First slice error in torrent order fails the fetch, same as the old
+  # sequential walk.
+  defp fetch_slices(http, urls, info, slices) do
+    slices
+    |> Task.async_stream(
+      fn {rel, file_offset, length} ->
+        fetch_slice(http, urls, info, rel, file_offset, length)
+      end,
+      max_concurrency: @max_slice_concurrency,
+      ordered: true,
+      timeout: :infinity
+    )
+    |> Enum.reduce_while({:ok, []}, fn
+      {:ok, {:ok, data}}, {:ok, acc} -> {:cont, {:ok, [data | acc]}}
+      {:ok, {:error, _} = err}, _ -> {:halt, err}
+      # Unreachable through safe_get (it converts every trappable
+      # failure to a value); the firewall for a task dying to an
+      # untrappable exit while the caller traps exits.
+      {:exit, _reason}, _ -> {:halt, {:error, :webseed_crashed}}
+    end)
+    |> case do
+      {:ok, reversed} -> {:ok, reversed |> Enum.reverse() |> Enum.join()}
       {:error, _} = err -> err
     end
   end

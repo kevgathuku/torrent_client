@@ -3,12 +3,38 @@ defmodule BoomDisk do
   def write_piece(_base, _info, _index, _data), do: {:error, :boom}
 end
 
+# Plain http doubles, not Mox: fetch tasks are separate processes and Mox
+# cannot see private expectations across the GenServer/task boundary.
+# Fixed payloads keep every test deterministic with no shared state.
+defmodule FixedHttp do
+  @moduledoc false
+  @data :binary.copy(<<7>>, 32_768)
+  def data, do: @data
+  def get(_url, _headers), do: {:ok, %Tesla.Env{status: 206, body: @data}}
+end
+
+defmodule BadHttp do
+  @moduledoc false
+  def get(_url, _headers),
+    do: {:ok, %Tesla.Env{status: 206, body: :binary.copy(<<8>>, 32_768)}}
+end
+
+defmodule RefusedHttp do
+  @moduledoc false
+  def get(_url, _headers), do: {:error, :econnrefused}
+end
+
+defmodule SlowHttp do
+  @moduledoc false
+  # Slow enough that a cancel sent right after start is always in flight.
+  def get(_url, _headers) do
+    Process.sleep(500)
+    {:ok, %Tesla.Env{status: 206, body: FixedHttp.data()}}
+  end
+end
+
 defmodule WebseedWorkerTest do
   use ExUnit.Case, async: true
-
-  import Mox
-  setup :set_mox_private
-  setup :verify_on_exit!
 
   setup do
     Process.flag(:trap_exit, true)
@@ -26,9 +52,8 @@ defmodule WebseedWorkerTest do
 
     info = %{:"piece length" => @piece_length, name: "f.bin", length: @piece_length}
     :ok = Disk.init_layout(base, info)
-    data = :crypto.strong_rand_bytes(@piece_length)
 
-    %{base: base, info: info, data: data, hash: :crypto.hash(:sha, data)}
+    %{base: base, info: info, data: FixedHttp.data(), hash: :crypto.hash(:sha, FixedHttp.data())}
   end
 
   defp worker_opts(ctx, extra \\ []) do
@@ -39,7 +64,7 @@ defmodule WebseedWorkerTest do
         piece_index: 0,
         piece_hash: ctx.hash,
         base_dir: ctx.base,
-        http: TorrentClient.WebseedHttpMock,
+        http: FixedHttp,
         disk: Disk,
         report_to: self()
       ],
@@ -54,11 +79,6 @@ defmodule WebseedWorkerTest do
   end
 
   test "verified fetch writes the piece and reports completion", ctx do
-    TorrentClient.WebseedHttpMock
-    |> expect(:get, fn "https://x/f.bin", [{"range", "bytes=0-32767"}] ->
-      {:ok, %Tesla.Env{status: 206, body: ctx.data}}
-    end)
-
     {pid, ref} = monitor_start(worker_opts(ctx))
 
     assert_receive {:block_progress, 0}, 5_000
@@ -68,42 +88,24 @@ defmodule WebseedWorkerTest do
   end
 
   test "hash mismatch stops abnormally and writes nothing", ctx do
-    TorrentClient.WebseedHttpMock
-    |> expect(:get, fn _url, _headers ->
-      {:ok, %Tesla.Env{status: 206, body: :crypto.strong_rand_bytes(@piece_length)}}
-    end)
-
-    {_pid, ref} = monitor_start(worker_opts(ctx))
+    {_pid, ref} = monitor_start(worker_opts(ctx, http: BadHttp))
 
     assert_receive {:DOWN, ^ref, :process, _, :piece_mismatch}, 5_000
     refute_received {:piece_complete, _, 0}
   end
 
   test "fetch failure stops with the webseed reason", ctx do
-    TorrentClient.WebseedHttpMock
-    |> expect(:get, fn _url, _headers -> {:error, :econnrefused} end)
-
-    {_pid, ref} = monitor_start(worker_opts(ctx))
+    {_pid, ref} = monitor_start(worker_opts(ctx, http: RefusedHttp))
 
     assert_receive {:DOWN, ^ref, :process, _, {:webseed_error, :webseed_failed}}, 5_000
     refute_received {:piece_complete, _, 0}
   end
 
   test "cancel in flight drops the bytes instead of writing them", ctx do
-    test = self()
+    # SlowHttp keeps the fetch in flight; the cancel lands first.
+    {pid, ref} = monitor_start(worker_opts(ctx, http: SlowHttp))
 
-    TorrentClient.WebseedHttpMock
-    |> expect(:get, fn _url, _headers ->
-      send(test, :fetching)
-      assert_receive :go, 5_000
-      {:ok, %Tesla.Env{status: 206, body: ctx.data}}
-    end)
-
-    {pid, ref} = monitor_start(worker_opts(ctx))
-
-    assert_receive :fetching, 5_000
     send(pid, {:cancel_piece, 0})
-    send(pid, :go)
 
     assert_receive {:DOWN, ^ref, :process, _, :normal}, 5_000
     refute_received {:piece_complete, _, 0}
@@ -114,9 +116,6 @@ defmodule WebseedWorkerTest do
   end
 
   test "disk failure stops abnormally", ctx do
-    TorrentClient.WebseedHttpMock
-    |> expect(:get, fn _url, _headers -> {:ok, %Tesla.Env{status: 206, body: ctx.data}} end)
-
     {_pid, ref} = monitor_start(worker_opts(ctx, disk: BoomDisk))
 
     assert_receive {:DOWN, ^ref, :process, _, {:disk_error, :boom}}, 5_000
@@ -124,9 +123,6 @@ defmodule WebseedWorkerTest do
   end
 
   test "no report_to still writes and stops normally", ctx do
-    TorrentClient.WebseedHttpMock
-    |> expect(:get, fn _url, _headers -> {:ok, %Tesla.Env{status: 206, body: ctx.data}} end)
-
     {_pid, ref} = monitor_start(Keyword.put(worker_opts(ctx), :report_to, nil))
 
     assert_receive {:DOWN, ^ref, :process, _, :normal}, 5_000
@@ -134,20 +130,9 @@ defmodule WebseedWorkerTest do
   end
 
   test "stale cancel indices are ignored", ctx do
-    test = self()
+    {pid, ref} = monitor_start(worker_opts(ctx, http: SlowHttp))
 
-    TorrentClient.WebseedHttpMock
-    |> expect(:get, fn _url, _headers ->
-      send(test, :fetching)
-      assert_receive :go, 5_000
-      {:ok, %Tesla.Env{status: 206, body: ctx.data}}
-    end)
-
-    {pid, ref} = monitor_start(worker_opts(ctx))
-
-    assert_receive :fetching, 5_000
     send(pid, {:cancel_piece, 7})
-    send(pid, :go)
 
     assert_receive {:piece_complete, ^pid, 0}, 5_000
     assert_receive {:DOWN, ^ref, :process, _, :normal}, 5_000

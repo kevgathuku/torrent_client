@@ -8,6 +8,25 @@ defmodule ExitingHttp do
   def get(_url, _headers), do: exit(:boom)
 end
 
+defmodule KillerHttp do
+  @moduledoc false
+  # Untrappable kill: the linked task dies. A caller trapping exits
+  # (like the worker GenServer) gets {:exit, _} from the stream.
+  def get(_url, _headers), do: Process.exit(self(), :kill)
+end
+
+defmodule MarkerHttp do
+  @moduledoc false
+  # Stateless echo double: each slice comes back as its file's initial
+  # repeated, so concatenation order is visible without shared state.
+  def get(url, [{"range", "bytes=" <> rest}]) do
+    [first, last] = String.split(rest, "-")
+    length = String.to_integer(last) - String.to_integer(first) + 1
+    marker = url |> String.split("/") |> List.last() |> String.first() |> :binary.first()
+    {:ok, %Tesla.Env{status: 206, body: :binary.copy(<<marker>>, length)}}
+  end
+end
+
 defmodule WebseedTest do
   use ExUnit.Case, async: true
 
@@ -167,6 +186,34 @@ defmodule WebseedTest do
   test "crashing http impls are ordinary fetch failures" do
     assert {:error, _} = Webseed.fetch_piece(RaisingHttp, ["https://x/f.bin"], single_info(), 0)
     assert {:error, _} = Webseed.fetch_piece(ExitingHttp, ["https://x/f.bin"], single_info(), 0)
+  end
+
+  test "a task-killing http impl fails the piece, not the caller" do
+    Process.flag(:trap_exit, true)
+
+    try do
+      assert {:error, :webseed_crashed} =
+               Webseed.fetch_piece(KillerHttp, ["https://x/f.bin"], single_info(), 0)
+    after
+      Process.flag(:trap_exit, false)
+    end
+  end
+
+  test "three slices concatenate in torrent order" do
+    info = %{
+      :"piece length" => 16_384,
+      name: "t",
+      files: [
+        %{path: ["a"], length: 8_000},
+        %{path: ["b"], length: 8_000},
+        %{path: ["c"], length: 8_000}
+      ]
+    }
+
+    assert Webseed.fetch_piece(MarkerHttp, ["https://x/pub/"], info, 0) ==
+             {:ok,
+              String.duplicate("a", 8_000) <>
+                String.duplicate("b", 8_000) <> String.duplicate("c", 384)}
   end
 
   test "short and oversized 200 bodies fail closed" do
