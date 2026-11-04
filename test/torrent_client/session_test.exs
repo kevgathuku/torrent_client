@@ -783,6 +783,19 @@ defmodule TorrentClient.SessionTest do
     assert k1 == k2
   end
 
+  test "out-of-range keys fail the add instead of corrupting the announce", %{
+    session: session,
+    tmp: tmp
+  } do
+    {path, _info, _data} = craft(tmp, "badkey", 1)
+    base = Path.join(tmp, "badkey")
+
+    assert {:error, _} = Session.add_torrent(path, [base_dir: base, key: nil], session)
+    assert {:error, _} = Session.add_torrent(path, [base_dir: base, key: 0x1_0000_0000], session)
+    assert {:error, _} = Session.add_torrent(path, [base_dir: base, key: -1], session)
+    assert [] = Session.status(session)
+  end
+
   # Loopback UDP tracker: answers connects, records announce keys,
   # returns no peers. Real datagrams, no mocks — the announce path runs
   # in a spawned task that Mox cannot see.
@@ -807,8 +820,13 @@ defmodule TorrentClient.SessionTest do
         :gen_udp.send(sock, ip, port, <<1::32-big, xid::32-big, 0::32-big, 0::32-big, 0::32-big>>)
         track_loop(sock, test)
 
-      _ ->
+      {:error, :timeout} ->
+        # Idle between announces: keep serving.
         track_loop(sock, test)
+
+      _ ->
+        # Socket closed (test over): stop instead of spinning on errors.
+        :ok
     end
   end
 
