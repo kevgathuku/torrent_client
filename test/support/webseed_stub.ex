@@ -27,12 +27,6 @@ defmodule WebseedStub do
     :ok
   end
 
-  def unregister(url) do
-    :ets.delete(@table, url)
-    :ets.delete(@table, {:calls, url})
-    :ok
-  end
-
   def calls(url) do
     case :ets.lookup(@table, {:calls, url}) do
       [{_, n}] -> n
