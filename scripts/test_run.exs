@@ -328,7 +328,7 @@ end)
   )
 
 receive do
-  {:download_stalled, _} -> :ok
+  {:download_stalled, _, _} -> :ok
 after
   10_000 -> raise "watchdog did not fire"
 end
