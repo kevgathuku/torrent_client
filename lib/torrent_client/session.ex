@@ -436,6 +436,7 @@ defmodule TorrentClient.Session do
         peers: static_peers,
         webseed_urls: Torrent.url_list(bytes),
         announce_timeout: Keyword.get(opts, :announce_timeout, state.announce_timeout),
+        key: Keyword.get(opts, :key, :rand.uniform(0xFFFFFFFF)),
         sup: nil,
         sup_ref: nil,
         restarts: 0,
@@ -691,7 +692,8 @@ defmodule TorrentClient.Session do
           info_hash: entry.id,
           peer_id: state.peer_id,
           port: state.port,
-          udp: state.udp
+          udp: state.udp,
+          key: entry.key
         )
 
       Logger.debug("tracker #{url}: #{inspect(outcome |> announce_summary())}")
@@ -751,7 +753,7 @@ defmodule TorrentClient.Session do
     state = %{state | torrents: Map.delete(state.torrents, entry.raw)}
 
     opts =
-      [base_dir: entry.base_dir, announce_timeout: entry.announce_timeout] ++
+      [base_dir: entry.base_dir, announce_timeout: entry.announce_timeout, key: entry.key] ++
         if(entry.peers, do: [peers: entry.peers], else: [])
 
     start_torrent(state, entry.path, opts)
