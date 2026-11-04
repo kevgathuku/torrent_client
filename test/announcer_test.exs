@@ -228,6 +228,44 @@ defmodule TorrentClient.AnnouncerTest do
     assert length(peers) == 5
   end
 
+  test "query_once carries an explicit key on the UDP wire" do
+    test = self()
+    %{bento: bento, info_hash: info_hash} = manjaro()
+
+    TorrentClient.UdpMock
+    |> stub(:send_recv, fn
+      _host, _port, <<0x41727101980::64-big, _action::32-big, xid::32-big>>, _timeout ->
+        {:ok, %{family: :inet, data: <<0::32-big, xid::32-big, 0x1234::64-big>>}}
+
+      _host, _port, <<_conn::64-big, 1::32-big, xid::32-big, _rest::binary>> = req, _timeout ->
+        send(test, {:announce_req, req})
+
+        {:ok,
+         %{
+           family: :inet,
+           data:
+             <<1::32-big, xid::32-big, 0::32-big, 0::32-big, 1::32-big, 127, 0, 0, 1, 0x1F, 0x90>>
+         }}
+    end)
+
+    assert {:ok, _} =
+             TorrentClient.Announcer.query_once(udp_url(),
+               bento: bento,
+               info_hash: info_hash,
+               peer_id: String.duplicate("p", 20),
+               port: 6881,
+               udp: TorrentClient.UdpMock,
+               key: 0xA11CE
+             )
+
+    assert_receive {:announce_req, req}, 1_000
+
+    <<_conn::64-big, 1::32-big, _xid::32-big, _ih::20-binary, _pid::20-binary, _down::64-big,
+      _left::64-big, _up::64-big, _event::32-big, _ip::32-big, key::32-big, _rest::binary>> = req
+
+    assert key == 0xA11CE
+  end
+
   test "query_once rejects unknown schemes without touching the network" do
     %{bento: bento, info_hash: info_hash} = manjaro()
 

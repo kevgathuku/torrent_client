@@ -414,6 +414,7 @@ defmodule TorrentClient.Session do
          raw = Base.decode16!(hex),
          :ok <- check_new(state, raw),
          :ok <- check_sup(state),
+         {:ok, key} <- validate_key(Keyword.get(opts, :key, :rand.uniform(0xFFFFFFFF))),
          hashes when is_list(hashes) <- Torrent.get_piece_hashes(bento),
          base_dir = Keyword.get(opts, :base_dir, Path.basename(path, ".torrent")),
          :ok <- state.disk.init_layout(base_dir, bento.info) do
@@ -436,6 +437,7 @@ defmodule TorrentClient.Session do
         peers: static_peers,
         webseed_urls: Torrent.url_list(bytes),
         announce_timeout: Keyword.get(opts, :announce_timeout, state.announce_timeout),
+        key: key,
         sup: nil,
         sup_ref: nil,
         restarts: 0,
@@ -661,6 +663,15 @@ defmodule TorrentClient.Session do
     if is_pid(pid) and Process.alive?(pid), do: :ok, else: {:error, :no_supervisor}
   end
 
+  # An explicit key must fit the 32-bit field both wires share: nil
+  # crashes the UDP encode in the announce task (misdiagnosed as an
+  # exhausted swarm) and oversized integers silently truncate on UDP
+  # while HTTP sends them whole.
+  defp validate_key(key) when is_integer(key) and key >= 0 and key <= 0xFFFFFFFF,
+    do: {:ok, key}
+
+  defp validate_key(key), do: {:error, {:invalid_key, key}}
+
   # Atom keys from bento structs, string keys from raw info maps (tests,
   # fixtures); both flow through here, so accept either.
   defp piece_length(info) do
@@ -691,7 +702,8 @@ defmodule TorrentClient.Session do
           info_hash: entry.id,
           peer_id: state.peer_id,
           port: state.port,
-          udp: state.udp
+          udp: state.udp,
+          key: entry.key
         )
 
       Logger.debug("tracker #{url}: #{inspect(outcome |> announce_summary())}")
@@ -751,7 +763,7 @@ defmodule TorrentClient.Session do
     state = %{state | torrents: Map.delete(state.torrents, entry.raw)}
 
     opts =
-      [base_dir: entry.base_dir, announce_timeout: entry.announce_timeout] ++
+      [base_dir: entry.base_dir, announce_timeout: entry.announce_timeout, key: entry.key] ++
         if(entry.peers, do: [peers: entry.peers], else: [])
 
     start_torrent(state, entry.path, opts)

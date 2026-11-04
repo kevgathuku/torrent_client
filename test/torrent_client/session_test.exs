@@ -765,6 +765,71 @@ defmodule TorrentClient.SessionTest do
     end
   end
 
+  test "announces carry one stable key per torrent", %{sup: sup, tmp: tmp} do
+    test = self()
+    session = start_session(sup)
+    track_port = start_tracker(test)
+
+    {path, _info, _data} = craft(tmp, "key", 1, "udp://127.0.0.1:#{track_port}/announce")
+    base = Path.join(tmp, "key")
+
+    assert {:ok, id} = Session.add_torrent(path, [base_dir: base], session)
+    assert_receive {:announce_key, k1}, 5_000
+    await_status(session, id, :exhausted, 5_000)
+
+    # Resume re-announces the same torrent: the key must not rotate.
+    assert {:ok, ^id} = Session.resume(id, session)
+    assert_receive {:announce_key, k2}, 5_000
+    assert k1 == k2
+  end
+
+  test "out-of-range keys fail the add instead of corrupting the announce", %{
+    session: session,
+    tmp: tmp
+  } do
+    {path, _info, _data} = craft(tmp, "badkey", 1)
+    base = Path.join(tmp, "badkey")
+
+    assert {:error, _} = Session.add_torrent(path, [base_dir: base, key: nil], session)
+    assert {:error, _} = Session.add_torrent(path, [base_dir: base, key: 0x1_0000_0000], session)
+    assert {:error, _} = Session.add_torrent(path, [base_dir: base, key: -1], session)
+    assert [] = Session.status(session)
+  end
+
+  # Loopback UDP tracker: answers connects, records announce keys,
+  # returns no peers. Real datagrams, no mocks — the announce path runs
+  # in a spawned task that Mox cannot see.
+  defp start_tracker(test) do
+    {:ok, sock} = :gen_udp.open(0, [:binary, active: false])
+    {:ok, port} = :inet.port(sock)
+    spawn(fn -> track_loop(sock, test) end)
+    port
+  end
+
+  defp track_loop(sock, test) do
+    case :gen_udp.recv(sock, 0, 5_000) do
+      {:ok, {ip, port, <<0x41727101980::64-big, 0::32-big, xid::32-big>>}} ->
+        :gen_udp.send(sock, ip, port, <<0::32-big, xid::32-big, 0x1234::64-big>>)
+        track_loop(sock, test)
+
+      {:ok,
+       {ip, port,
+        <<_conn::64-big, 1::32-big, xid::32-big, _ih::20-binary, _pid::20-binary, _dl::64-big,
+          _left::64-big, _up::64-big, _ev::32-big, _ip::32-big, key::32-big, _rest::binary>>}} ->
+        send(test, {:announce_key, key})
+        :gen_udp.send(sock, ip, port, <<1::32-big, xid::32-big, 0::32-big, 0::32-big, 0::32-big>>)
+        track_loop(sock, test)
+
+      {:error, :timeout} ->
+        # Idle between announces: keep serving.
+        track_loop(sock, test)
+
+      _ ->
+        # Socket closed (test over): stop instead of spinning on errors.
+        :ok
+    end
+  end
+
   test "config file port is honored when free", %{sup: sup, tmp: tmp} do
     {:ok, sock} = :gen_tcp.listen(0, [])
     {:ok, free} = :inet.port(sock)

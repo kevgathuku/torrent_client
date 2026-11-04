@@ -168,7 +168,7 @@ defmodule TorrentClient.Announcer do
       peer_id: Keyword.fetch!(opts, :peer_id),
       port: Keyword.fetch!(opts, :port),
       udp: Keyword.get(opts, :udp, TorrentClient.Udp),
-      key: :rand.uniform(0xFFFFFFFF),
+      key: Keyword.get(opts, :key, :rand.uniform(0xFFFFFFFF)),
       started: false
     }
 
