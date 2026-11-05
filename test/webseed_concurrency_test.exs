@@ -31,28 +31,32 @@ end
 defmodule ConcHttp do
   @moduledoc false
   # Parks at the gate until the test's expected concurrency is parked
-  # alongside, then proceeds with the rest. The short settle keeps real
-  # overlap observable for the peak gauge; the rendezvous (not the
-  # sleep) carries the proof, and the 5s bound keeps a sequential
-  # implementation failing instead of hanging.
-  @settle 50
+  # alongside, then proceeds with the rest. In-flight counts from
+  # arrival (before the gate) to return, so the peak gauge measures
+  # every overlapping request with no settle sleep; the 5s bound keeps
+  # a sequential implementation failing instead of hanging.
   @wait 5_000
 
   def get(url, _headers) do
     me = self()
 
     {body, proceed?} =
-      Agent.get_and_update(ConcHttpAgent, fn
-        %{released: true} = s ->
-          {{Map.fetch!(s.responses, url), true}, s}
+      Agent.get_and_update(ConcHttpAgent, fn s ->
+        in_flight = s.in_flight + 1
+        s = %{s | in_flight: in_flight, peak: max(s.peak, in_flight)}
 
-        %{arrived: n, target: t} = s when n + 1 >= t ->
-          Enum.each(s.waiters, &send(&1, :release))
-          {{Map.fetch!(s.responses, url), true}, %{s | arrived: n + 1, released: true}}
+        case s do
+          %{released: true} ->
+            {{Map.fetch!(s.responses, url), true}, s}
 
-        %{arrived: n} = s ->
-          {{Map.fetch!(s.responses, url), false},
-           %{s | arrived: n + 1, waiters: [me | s.waiters]}}
+          %{arrived: n, target: t} when n + 1 >= t ->
+            Enum.each(s.waiters, &send(&1, :release))
+            {{Map.fetch!(s.responses, url), true}, %{s | arrived: n + 1, released: true}}
+
+          %{arrived: n} ->
+            {{Map.fetch!(s.responses, url), false},
+             %{s | arrived: n + 1, waiters: [me | s.waiters]}}
+        end
       end)
 
     unless proceed? do
@@ -62,13 +66,6 @@ defmodule ConcHttp do
         @wait -> Agent.update(ConcHttpAgent, &%{&1 | timeouts: &1.timeouts + 1})
       end
     end
-
-    Agent.update(ConcHttpAgent, fn s ->
-      in_flight = s.in_flight + 1
-      %{s | in_flight: in_flight, peak: max(s.peak, in_flight)}
-    end)
-
-    Process.sleep(@settle)
 
     Agent.update(ConcHttpAgent, fn s -> %{s | in_flight: s.in_flight - 1} end)
     {:ok, %Tesla.Env{status: 206, body: body}}
