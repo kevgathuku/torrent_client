@@ -64,7 +64,10 @@ defmodule TorrentClient.Webseed do
   # torrent order. No per-task timeout: the HTTP seam bounds every wait
   # itself, so a slow slice fails the piece instead of wedging the pool.
   # First slice error in torrent order fails the fetch, same as the old
-  # sequential walk.
+  # sequential walk. Tasks link to the caller: the only production caller
+  # is the worker GenServer (traps exits by construction), so a dying
+  # task surfaces as {:exit, _} below while a dying caller reaps its
+  # fetches instead of orphaning them.
   defp fetch_slices(http, urls, info, slices) do
     slices
     |> Task.async_stream(
