@@ -1,3 +1,8 @@
+# Suite-lifetime owner for the webseed stub table: created here so async
+# tests share one stable table instead of one owned by whichever test
+# happens to register first (owner death would wipe every test's rows).
+WebseedStub.start_table()
+
 ExUnit.start()
 
 Mox.defmock(TorrentClientRequestsMock, for: TorrentClient.Requests.RequestsBehaviour)

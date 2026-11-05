@@ -199,6 +199,18 @@ defmodule WebseedTest do
     end
   end
 
+  test "stub table helpers behave without a fetch" do
+    assert :ok = WebseedStub.start_table()
+    assert :ok = WebseedStub.start_table()
+    assert WebseedStub.get("https://x/nothing-here", []) == {:error, :no_webseed_stub}
+    assert WebseedStub.calls("https://x/nothing-here") == 0
+    assert WebseedStub.await_gate("https://x/nothing-here") == :ok
+
+    url = "https://x/timeout-probe"
+    WebseedStub.open_gate(url)
+    assert WebseedStub.await_gate(url, 10) == {:error, :gate_timeout}
+  end
+
   test "three slices concatenate in torrent order" do
     info = %{
       :"piece length" => 16_384,

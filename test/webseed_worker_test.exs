@@ -24,12 +24,24 @@ defmodule RefusedHttp do
   def get(_url, _headers), do: {:error, :econnrefused}
 end
 
+defmodule CheckedHttp do
+  @moduledoc false
+  # Accepts only the exact request the success test makes; anything
+  # else is a loud failure, so the test pins the worker's request.
+  def get("https://x/f.bin", [{"range", "bytes=0-32767"}]),
+    do: {:ok, %Tesla.Env{status: 206, body: FixedHttp.data()}}
+end
+
 defmodule SlowHttp do
   @moduledoc false
-  # Slow enough that a cancel sent right after start is always in flight.
-  def get(_url, _headers) do
-    Process.sleep(500)
-    {:ok, %Tesla.Env{status: 206, body: FixedHttp.data()}}
+  # Rendezvous double: notifies the test when the fetch starts and holds
+  # it open until released, so cancels land in flight deterministically.
+  # The gate lives in WebseedStub, keyed by URL (one per test).
+  def get(url, _headers) do
+    case WebseedStub.await_gate(url) do
+      :ok -> {:ok, %Tesla.Env{status: 206, body: FixedHttp.data()}}
+      {:error, _} = err -> err
+    end
   end
 end
 
@@ -79,7 +91,7 @@ defmodule WebseedWorkerTest do
   end
 
   test "verified fetch writes the piece and reports completion", ctx do
-    {pid, ref} = monitor_start(worker_opts(ctx))
+    {pid, ref} = monitor_start(worker_opts(ctx, http: CheckedHttp))
 
     assert_receive {:block_progress, 0}, 5_000
     assert_receive {:piece_complete, ^pid, 0}, 5_000
@@ -102,12 +114,16 @@ defmodule WebseedWorkerTest do
   end
 
   test "cancel in flight drops the bytes instead of writing them", ctx do
-    # SlowHttp keeps the fetch in flight; the cancel lands first.
-    {pid, ref} = monitor_start(worker_opts(ctx, http: SlowHttp))
+    # The gate holds the fetch open: cancel lands before release, always.
+    url = "https://x/cancel"
+    gate = WebseedStub.open_gate(url)
+    {pid, mon} = monitor_start(worker_opts(ctx, http: SlowHttp, webseed_urls: [url]))
 
+    assert_receive {:fetch_started, task, ^gate}, 5_000
     send(pid, {:cancel_piece, 0})
+    send(task, {:release, gate})
 
-    assert_receive {:DOWN, ^ref, :process, _, :normal}, 5_000
+    assert_receive {:DOWN, ^mon, :process, _, :normal}, 5_000
     refute_received {:piece_complete, _, 0}
   end
 
@@ -130,11 +146,15 @@ defmodule WebseedWorkerTest do
   end
 
   test "stale cancel indices are ignored", ctx do
-    {pid, ref} = monitor_start(worker_opts(ctx, http: SlowHttp))
+    url = "https://x/stale"
+    gate = WebseedStub.open_gate(url)
+    {pid, mon} = monitor_start(worker_opts(ctx, http: SlowHttp, webseed_urls: [url]))
 
+    assert_receive {:fetch_started, task, ^gate}, 5_000
     send(pid, {:cancel_piece, 7})
+    send(task, {:release, gate})
 
     assert_receive {:piece_complete, ^pid, 0}, 5_000
-    assert_receive {:DOWN, ^ref, :process, _, :normal}, 5_000
+    assert_receive {:DOWN, ^mon, :process, _, :normal}, 5_000
   end
 end

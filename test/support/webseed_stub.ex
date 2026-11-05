@@ -27,6 +27,37 @@ defmodule WebseedStub do
     :ok
   end
 
+  @doc """
+  Open a fetch gate for `url`: the next `SlowHttp` fetch notifies the
+  caller with `{:fetch_started, task_pid, ref}` and blocks until the
+  task receives `{:release, ref}`. Returns the gate ref.
+  """
+  def open_gate(url) do
+    ref = make_ref()
+    :ets.insert(@table, {{:gate, url}, {self(), ref}})
+    ref
+  end
+
+  @doc """
+  Called from inside a fetch task: notify the gate owner and block until
+  released. No gate registered means proceed (ordinary stub fetch).
+  """
+  def await_gate(url, timeout \\ 5_000) do
+    case :ets.lookup(@table, {:gate, url}) do
+      [{_, {test_pid, ref}}] ->
+        send(test_pid, {:fetch_started, self(), ref})
+
+        receive do
+          {:release, ^ref} -> :ok
+        after
+          timeout -> {:error, :gate_timeout}
+        end
+
+      [] ->
+        :ok
+    end
+  end
+
   def calls(url) do
     case :ets.lookup(@table, {:calls, url}) do
       [{_, n}] -> n
