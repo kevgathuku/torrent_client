@@ -1,12 +1,13 @@
 # Manual smoke helper, kept out of application code.
 # Usage: mix run scripts/test_run.exs [torrent_file] [download_dir]
 #
-# Exercises the real pipeline end to end against the real swarm; every
-# section prints ok=true and the script raises on the first mismatch:
-#   1. parse the torrent and hash the as-found info dict
-#   2. disk layout for the real torrent
-#   3. peer fetch from the real trackers
-#   4. download piece 0 from real peers (rest pre-marked via resume)
+# Exercises the real pipeline end to end through the real Session — the
+# same calls a client makes: add -> tracker announce -> supervised
+# subtree download -> verify. Every section prints ok=true and the script
+# raises on the first mismatch:
+#   1. parse the torrent (logging and post-download verification only)
+#   2. add to the session and wait for completion
+#   3. verify every piece on disk against the real piece hashes
 require Logger
 
 args = System.argv()
@@ -17,92 +18,90 @@ unless File.exists?(torrent_filename) do
   raise "torrent file not found: #{torrent_filename}"
 end
 
-# 1. Parse the torrent and hash the as-found info dict.
+# 1. Parse the torrent. The session parses it again on add; this copy is
+# only for logging and for the post-download spot check.
 {:ok, torrent_bytes} = File.read(torrent_filename)
 {:ok, bento, info} = Torrent.parse_bytes(torrent_bytes)
 info_hash = Torrent.info_hash(info)
-Logger.info("info_hash=#{info_hash} pieces=#{length(Torrent.get_piece_hashes(bento))}")
-
-# 2. Prepare the download layout (validated paths, declared sizes).
-:ok = TorrentClient.Disk.init_layout(download_dir, bento.info)
-Logger.info("layout ready under #{download_dir}")
-
-# 3. Ask the real trackers for real peers.
-peer_id = Utils.generate_peer_id()
-
-# query_once dispatches UDP vs HTTP(S) per URL so mixed tiers work.
-query = fn url ->
-  TorrentClient.Announcer.query_once(url,
-    bento: bento,
-    info_hash: info_hash,
-    peer_id: peer_id,
-    port: 6881
-  )
-end
-
-tracker_urls = bento |> Torrent.announce_tiers() |> List.flatten()
-
-peers =
-  case TorrentClient.Announcer.announce_all(tracker_urls, query, timeout: 10_000) do
-    {:ok, %{peers: peers}} -> peers
-    {:error, _} -> []
-  end
-
-Logger.info("peers=#{length(peers)}#{if peers == [], do: " (trackers unreachable?)", else: ""}")
-
-if first = List.first(peers),
-  do: Logger.info("first peer=#{inspect(Map.take(first, [:ip_tuple, :port]))}")
-
-# 4. Real download from real peers: fetch piece 0 of the real torrent.
-# The rest is pre-marked verified through the resume seam, so this is
-# shaped like resuming a nearly-complete torrent — one piece over the
-# wire, fully connected, handshaked, requested in blocks, SHA1-verified,
-# and written to the §2 layout. No loopback seeds, no synthetic bytes.
 hashes = Torrent.get_piece_hashes(bento)
 true = is_list(hashes) and length(hashes) > 0
+Logger.info("info_hash=#{info_hash} pieces=#{length(hashes)}")
 
-if peers == [] do
-  raise "no peers from trackers; cannot smoke-test a real download"
+# 2. Add to the real session: it announces to the real trackers, starts
+# the supervised subtree (peers, refill, webseeds), and downloads.
+# A previous run's entry is forgotten first so the smoke always starts
+# from add; bytes and resume state on disk survive and resume as usual.
+for %{id: id, path: path} <- TorrentClient.Session.status(),
+    Path.expand(path) == Path.expand(torrent_filename) do
+  {:ok, ^id} = TorrentClient.Session.forget(id)
 end
 
-# The coordinator takes the raw 20 bytes; hex is only for URLs/logging.
-raw_hash = Base.decode16!(info_hash)
-[first_hash | _] = hashes
+{:ok, hex} = TorrentClient.Session.add_torrent(torrent_filename, base_dir: download_dir)
+
+# Live progress comes from the published resume file, not the session
+# entry: the coordinator rewrites it on every verified piece, while the
+# entry's counter only moves on the terminal report.
+raw = Base.decode16!(info_hash)
 total = length(hashes)
-already = if total > 1, do: Enum.to_list(1..(total - 1)), else: []
 
-{:ok, sup} =
-  TorrentClient.TorrentSupervisor.start_link(
-    info_hash: raw_hash,
-    peers: peers,
-    info: bento.info,
-    piece_hashes: hashes,
-    verified: already,
-    base_dir: download_dir,
-    peer_id: peer_id,
-    report_to: self(),
-    recv_timeout: 10_000,
-    piece_timeout: 120_000,
-    watchdog_timeout: 60_000
-  )
-
-[{coord_pid, _}] = Registry.lookup(TorrentClient.Registry, {raw_hash, :coordinator})
-coord_ref = Process.monitor(coord_pid)
-
-receive do
-  {:torrent_complete, ^raw_hash} -> :ok
-after
-  300_000 -> raise "real download did not finish piece 0"
+progress = fn ->
+  TorrentClient.Disk.load_verified(TorrentClient.Disk, download_dir, %{
+    info_hash: raw,
+    total: total,
+    piece_length: Map.get(bento.info, :"piece length")
+  })
+  |> length()
 end
 
-receive do
-  {:DOWN, ^coord_ref, :process, ^coord_pid, :normal} -> :ok
-after
-  5_000 -> raise "coordinator did not stop"
+wait_for = fn wait_for, deadline ->
+  entry = Enum.find(TorrentClient.Session.status(), &(&1.id == hex))
+
+  cond do
+    entry == nil ->
+      raise "session entry vanished"
+
+    entry.status == :complete ->
+      Logger.info("complete #{progress.()}/#{total}")
+      :ok
+
+    entry.status in [:exhausted, :stalled] ->
+      raise "download ended #{entry.status}: #{progress.()}/#{total} verified"
+
+    System.monotonic_time(:second) > deadline ->
+      raise "timed out waiting: #{entry.status} #{progress.()}/#{total} verified"
+
+    true ->
+      Logger.info("... #{entry.status} #{progress.()}/#{total}")
+      Process.sleep(15_000)
+      wait_for.(wait_for, deadline)
+  end
 end
 
-{:ok, piece0} = TorrentClient.Disk.read_piece(download_dir, bento.info, 0)
-true = Torrent.verify_hash?(piece0, first_hash)
-
+wait_for.(wait_for, System.monotonic_time(:second) + 1_800)
 Logger.info("real download ok=true")
-Supervisor.stop(sup)
+
+# 3. Validate the complete download: every piece on disk must match its
+# real hash. A stale resume file can mark the torrent complete without
+# the bytes being present, so trust hashes, not status.
+bad =
+  hashes
+  |> Enum.with_index()
+  |> Enum.reduce([], fn {expected, index}, bad ->
+    case TorrentClient.Disk.read_piece(download_dir, bento.info, index) do
+      {:ok, data} ->
+        if Torrent.verify_hash?(data, expected) do
+          if rem(index, 500) == 0, do: Logger.info("... verified #{index}/#{length(hashes)}")
+          bad
+        else
+          [index | bad]
+        end
+
+      {:error, reason} ->
+        raise "piece #{index} unreadable: #{inspect(reason)}"
+    end
+  end)
+
+case bad do
+  [] -> Logger.info("disk verify ok=true (#{length(hashes)}/#{length(hashes)} pieces)")
+  failed -> raise "disk verify failed for pieces: #{inspect(Enum.sort(failed))}"
+end
