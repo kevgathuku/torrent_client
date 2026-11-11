@@ -32,6 +32,7 @@ in `.agents/skills/` and are not tracked here.)
 - A torrent whose supervisor keeps dying no longer slips out of session control: the session monitors every subtree, restarts a crashed one from resume state, and marks it exhausted after 3 restarts — so pause/forget always stop the live subtree and a crash loop ends in a terminal entry instead of spinning silently.
 - Tracker HTTP queries carry their own 5s inner timeout: one blackholed tracker fails fast instead of eating the whole announce window (the fan-out timeout stays the outer bound).
 - Peer downloads adapt to the link: the block pipeline grows past 5 on fast links (cap 16, ~35% faster on 100ms-RTT loopback) and backs off instead of dying on jitter, receive timeouts derive from observed block latency, and silent peers fail fast on a 5s first-byte deadline so poison peers are skipped in ~20s instead of minutes.
+- Webseed slices fetch up to 4-wide instead of one at a time: a 4-slice 512 KiB piece from archive.org drops from ~11.5s to ~5.6s (SHA1-verified both ways); per-slice base failover and first-error-wins semantics are unchanged.
 
 - Piece-hash slicing aligned to 20-byte boundaries past the first piece (every later piece verified against the wrong hash, so multi-piece downloads stalled on endless mismatches).
 - HTTP tracker URLs percent-encode binary fields byte-wise (was space-as-`+`, corrupting info-hashes containing `0x20`).

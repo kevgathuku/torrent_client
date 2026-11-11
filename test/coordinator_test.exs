@@ -1090,21 +1090,24 @@ defmodule CoordinatorTest do
 
   test "dead swarm completes through webseed", ctx do
     [data0, data1] = ctx.data
+    url = "https://x/dead-swarm/c.bin"
 
-    # One order-independent expectation: the two piece workers race to
-    # the mock, so dispatch on the Range instead of relying on call order.
-    TorrentClient.WebseedHttpMock
-    |> expect(:get, 2, fn "https://x/c.bin", [{"range", range}] ->
-      body =
-        case range do
-          "bytes=0-32767" -> data0
-          "bytes=32768-65535" -> data1
-        end
+    # One order-independent handler: the two piece workers race to the
+    # stub, so dispatch on the Range instead of relying on call order.
+    :ok =
+      WebseedStub.register(url, fn _url, [{"range", range}] ->
+        body =
+          case range do
+            "bytes=0-32767" -> data0
+            "bytes=32768-65535" -> data1
+          end
 
-      {:ok, %Tesla.Env{status: 206, body: body}}
-    end)
+        {:ok, %Tesla.Env{status: 206, body: body}}
+      end)
 
-    start_sup_unlinked(webseed_opts(ctx, []))
+    start_sup_unlinked(
+      webseed_opts(ctx, webseed_urls: ["https://x/dead-swarm/"], webseed_http: WebseedStub)
+    )
 
     pid = coord_pid(ctx.info_hash)
     ref = Process.monitor(pid)
@@ -1115,6 +1118,7 @@ defmodule CoordinatorTest do
 
     assert {:ok, data0} == Disk.read_piece(ctx.base, ctx.info, 0)
     assert {:ok, data1} == Disk.read_piece(ctx.base, ctx.info, 1)
+    assert WebseedStub.calls(url) == 2
   end
 
   test "webseed only fills pieces no peer holds", ctx do
@@ -1130,13 +1134,22 @@ defmodule CoordinatorTest do
     end)
 
     # Any webseed fetch outside piece 1 is an unexpected call and fails the test.
-    TorrentClient.WebseedHttpMock
-    |> expect(:get, 1, fn "https://x/c.bin", [{"range", "bytes=32768-65535"}] ->
-      {:ok, %Tesla.Env{status: 206, body: data1}}
-    end)
+    url = "https://x/fills/c.bin"
+
+    :ok =
+      WebseedStub.register(url, fn _url, [{"range", "bytes=32768-65535"}] ->
+        {:ok, %Tesla.Env{status: 206, body: data1}}
+      end)
 
     peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
-    start_sup_unlinked(webseed_opts(ctx, peers: peers))
+
+    start_sup_unlinked(
+      webseed_opts(ctx,
+        peers: peers,
+        webseed_urls: ["https://x/fills/"],
+        webseed_http: WebseedStub
+      )
+    )
 
     pid = coord_pid(ctx.info_hash)
     ref = Process.monitor(pid)
@@ -1148,6 +1161,7 @@ defmodule CoordinatorTest do
 
     assert {:ok, data0} == Disk.read_piece(ctx.base, ctx.info, 0)
     assert {:ok, data1} == Disk.read_piece(ctx.base, ctx.info, 1)
+    assert WebseedStub.calls(url) == 1
   end
 
   test "a failing silent peer yields to webseed after one attempt", ctx do
@@ -1169,24 +1183,34 @@ defmodule CoordinatorTest do
       end
     end)
 
-    # Order-independent: both piece workers race to the mock.
-    TorrentClient.WebseedHttpMock
-    |> expect(:get, 2, fn "https://x/c.bin", [{"range", range}] ->
-      body =
-        case range do
-          "bytes=0-32767" -> data0
-          "bytes=32768-65535" -> data1
-        end
+    # Order-independent: both piece workers race to the stub.
+    url = "https://x/silent-peer/c.bin"
 
-      {:ok, %Tesla.Env{status: 206, body: body}}
-    end)
+    :ok =
+      WebseedStub.register(url, fn _url, [{"range", range}] ->
+        body =
+          case range do
+            "bytes=0-32767" -> data0
+            "bytes=32768-65535" -> data1
+          end
+
+        {:ok, %Tesla.Env{status: 206, body: body}}
+      end)
 
     peers = [%Peer{ip_tuple: {127, 0, 0, 1}, port: port}]
     # One slot serializes every assignment, so no endgame duplicate or
     # busy-window race can fetch around the decision under test: without
     # demotion the piece keeps going back to the hanging peer and the
     # download never completes.
-    start_sup_unlinked(webseed_opts(ctx, peers: peers, max_peer_failures: 100, max_peers: 1))
+    start_sup_unlinked(
+      webseed_opts(ctx,
+        peers: peers,
+        max_peer_failures: 100,
+        max_peers: 1,
+        webseed_urls: ["https://x/silent-peer/"],
+        webseed_http: WebseedStub
+      )
+    )
 
     pid = coord_pid(ctx.info_hash)
     ref = Process.monitor(pid)
@@ -1197,6 +1221,7 @@ defmodule CoordinatorTest do
 
     # The peer got its optimistic dial; the webseed did the rest.
     assert_received :refused
+    assert WebseedStub.calls(url) == 2
 
     assert {:ok, data0} == Disk.read_piece(ctx.base, ctx.info, 0)
     assert {:ok, data1} == Disk.read_piece(ctx.base, ctx.info, 1)
@@ -1205,19 +1230,22 @@ defmodule CoordinatorTest do
   test "every verified piece emits, including the final one", ctx do
     attach_telemetry(self(), ctx.info_hash)
     [data0, data1] = ctx.data
+    url = "https://x/emits/c.bin"
 
-    TorrentClient.WebseedHttpMock
-    |> expect(:get, 2, fn "https://x/c.bin", [{"range", range}] ->
-      body =
-        case range do
-          "bytes=0-32767" -> data0
-          "bytes=32768-65535" -> data1
-        end
+    :ok =
+      WebseedStub.register(url, fn _url, [{"range", range}] ->
+        body =
+          case range do
+            "bytes=0-32767" -> data0
+            "bytes=32768-65535" -> data1
+          end
 
-      {:ok, %Tesla.Env{status: 206, body: body}}
-    end)
+        {:ok, %Tesla.Env{status: 206, body: body}}
+      end)
 
-    start_sup_unlinked(webseed_opts(ctx, []))
+    start_sup_unlinked(
+      webseed_opts(ctx, webseed_urls: ["https://x/emits/"], webseed_http: WebseedStub)
+    )
 
     pid = coord_pid(ctx.info_hash)
     ref = Process.monitor(pid)
@@ -1229,6 +1257,7 @@ defmodule CoordinatorTest do
     # finish/2), so emission must happen on the completion report.
     assert_received {:telemetry, [:torrent_client, :webseed, :fetch_complete], _, %{index: 0}}
     assert_received {:telemetry, [:torrent_client, :webseed, :fetch_complete], _, %{index: 1}}
+    assert WebseedStub.calls(url) == 2
     Process.sleep(200)
     refute_received {:telemetry, [:torrent_client, :webseed, :fetch_complete], _, _}
   end
@@ -1263,12 +1292,12 @@ defmodule CoordinatorTest do
     dead = spawn(fn -> :ok end)
     dead_ref = Process.monitor(dead)
     assert_receive {:DOWN, ^dead_ref, :process, _, _}
+    url = "https://x/dead-sup/c.bin"
 
-    TorrentClient.WebseedHttpMock
-    |> stub(:get, fn _url, _headers -> {:error, :boom} end)
+    :ok = WebseedStub.register(url, fn _url, _headers -> {:error, :boom} end)
 
     opts =
-      webseed_opts(ctx, [])
+      webseed_opts(ctx, webseed_urls: ["https://x/dead-sup/"], webseed_http: WebseedStub)
       |> Keyword.merge(peer_sup: dead, watchdog_timeout: 50, max_stalls: 1)
 
     {:ok, pid} = TorrentClient.Coordinator.start_link(opts)
@@ -1280,11 +1309,17 @@ defmodule CoordinatorTest do
   end
 
   test "failing webseed exhausts instead of spinning", ctx do
-    TorrentClient.WebseedHttpMock
-    |> stub(:get, fn _url, _headers -> {:error, :econnrefused} end)
-
+    url = "https://x/exhausts/c.bin"
+    :ok = WebseedStub.register(url, fn _url, _headers -> {:error, :econnrefused} end)
     Process.flag(:trap_exit, true)
-    start_sup_unlinked(webseed_opts(ctx, max_peer_failures: 2))
+
+    start_sup_unlinked(
+      webseed_opts(ctx,
+        max_peer_failures: 2,
+        webseed_urls: ["https://x/exhausts/"],
+        webseed_http: WebseedStub
+      )
+    )
 
     pid = coord_pid(ctx.info_hash)
     ref = Process.monitor(pid)
@@ -1387,21 +1422,29 @@ defmodule CoordinatorTest do
 
     # Both pieces are assigned synchronously during init, so the first
     # fetch proves the clock advance lands before any completion.
-    TorrentClient.WebseedHttpMock
-    |> expect(:get, 2, fn "https://x/c.bin", [{"range", range}] ->
-      send(test, :fetching)
-      wait_gate(gate, 250)
+    url = "https://x/telemetry/c.bin"
 
-      body =
-        case range do
-          "bytes=0-32767" -> data0
-          "bytes=32768-65535" -> data1
-        end
+    :ok =
+      WebseedStub.register(url, fn _url, [{"range", range}] ->
+        send(test, :fetching)
+        wait_gate(gate, 250)
 
-      {:ok, %Tesla.Env{status: 206, body: body}}
-    end)
+        body =
+          case range do
+            "bytes=0-32767" -> data0
+            "bytes=32768-65535" -> data1
+          end
 
-    start_sup_unlinked(webseed_opts(ctx, clock: ManualClock))
+        {:ok, %Tesla.Env{status: 206, body: body}}
+      end)
+
+    start_sup_unlinked(
+      webseed_opts(ctx,
+        clock: ManualClock,
+        webseed_urls: ["https://x/telemetry/"],
+        webseed_http: WebseedStub
+      )
+    )
 
     assert_receive :fetching, 5_000
     ManualClock.advance(2_500)
@@ -1411,16 +1454,24 @@ defmodule CoordinatorTest do
     assert_received {:telemetry, [:torrent_client, :webseed, :fetch_complete],
                      %{duration_ms: duration, bytes: 32_768}, %{index: _}}
                     when duration >= 2500
+
+    assert WebseedStub.calls(url) == 2
   end
 
   test "webseed failure emits the fetch reason", ctx do
     attach_telemetry(self(), ctx.info_hash)
-
-    TorrentClient.WebseedHttpMock
-    |> stub(:get, fn _url, _headers -> {:error, :econnrefused} end)
-
+    url = "https://x/fetch-failed/c.bin"
+    :ok = WebseedStub.register(url, fn _url, _headers -> {:error, :econnrefused} end)
     Process.flag(:trap_exit, true)
-    start_sup_unlinked(webseed_opts(ctx, max_peer_failures: 1))
+
+    start_sup_unlinked(
+      webseed_opts(ctx,
+        max_peer_failures: 1,
+        webseed_urls: ["https://x/fetch-failed/"],
+        webseed_http: WebseedStub
+      )
+    )
+
     assert_receive {:swarm_exhausted, _, _}, 15_000
     Process.flag(:trap_exit, false)
 

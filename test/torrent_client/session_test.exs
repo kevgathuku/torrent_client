@@ -720,20 +720,21 @@ defmodule TorrentClient.SessionTest do
 
   test "webseed urls start a download with a dead swarm", %{sup: sup, tmp: tmp} do
     test = self()
-    session = start_session(sup, webseed_http: TorrentClient.WebseedHttpMock)
+    session = start_session(sup, webseed_http: WebseedStub)
 
     {path, _info, [data]} =
       craft(tmp, "w", 1, "http://127.0.0.1:9/announce", %{"url-list" => ["https://x/w.bin"]})
 
     base = Path.join(tmp, "w")
     {:ok, gate} = Agent.start_link(fn -> :closed end)
+    url = "https://x/w.bin"
 
-    TorrentClient.WebseedHttpMock
-    |> expect(:get, fn "https://x/w.bin", [{"range", "bytes=0-16383"}] ->
-      send(test, :fetching)
-      wait_gate(gate, 250)
-      {:ok, %Tesla.Env{status: 206, body: data}}
-    end)
+    :ok =
+      WebseedStub.register(url, fn _url, [{"range", "bytes=0-16383"}] ->
+        send(test, :fetching)
+        wait_gate(gate, 250)
+        {:ok, %Tesla.Env{status: 206, body: data}}
+      end)
 
     assert {:ok, id} = Session.add_torrent(path, [base_dir: base, peers: []], session)
     # Webseed URLs alone keep the torrent out of exhausted...
@@ -752,6 +753,7 @@ defmodule TorrentClient.SessionTest do
     }
 
     assert {:ok, ^data} = Disk.read_piece(base, info, 0)
+    assert WebseedStub.calls(url) == 1
   end
 
   defp wait_gate(_gate, 0), do: flunk("webseed gate never opened")
